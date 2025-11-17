@@ -1,0 +1,464 @@
+# envs/simple_env.py
+
+import math
+import matplotlib.pyplot as plt 
+import random
+import numpy as np
+
+class Simple2DEnv:
+    """
+    Very simple 2D environment skeleton.
+    For now it only keeps track of step counter.
+    Later we'll add:
+    -   rooms, walls, doors, people
+    -   robot state and lidar
+    -   reset() randomized worlds
+    """
+
+    def __init__(
+            self, 
+            max_steps: int = 100, 
+            dt: float = 0.1,
+            room_width: float = 20.0,
+            room_height: float = 20.0,
+            robot_radius: float = 0.2,
+            num_rays: int = 8,
+            max_lidar_distance: float = 20.0,
+            num_people: int = 3,
+            people_radius: float = 0.2,
+            people_speed: float = 0.5,
+            ):
+
+        self.max_steps = max_steps
+        self.step_count = 0
+        self.dt = dt
+
+        # Robot state variables
+        self.x = 0.0
+        self.y = 0.0
+        self.theta = 0.0  # orientation
+        self.trajectory = []  # list of (x,y) positions
+
+        # Room geometry
+        self.room_width = room_width
+        self.room_height = room_height
+        self.robot_radius = robot_radius
+
+        self.num_rays = num_rays
+        self.max_lidar_distance = max_lidar_distance
+
+        # People parameters
+        self.num_people = num_people
+        self.people_radius = people_radius
+        self.people_speed = people_speed
+
+        self.last_termination_reason = None
+
+        self.people = [] # list of dicts with x,y,vx,vy
+
+        # GOAL position
+        self.goal_x = None
+        self.goal_y = None
+        self.goal_radius = 0.3
+
+        self.fig = None
+        self.ax = None
+
+    def _ray_circle_intersection(self, angle, cx, cy, radius):
+        """
+        Compute intersection of a ray from (self.x, self.y) at angle `angle`
+        with a circle centered at (cx, cy) with given radius.
+        Return the distance to the intersection point, or None if no intersection.
+        """
+        x0, y0 = self.x, self.y
+        dx = math.cos(angle)
+        dy = math.sin(angle)
+
+        # f = o - c
+        fx = x0 - cx
+        fy = y0 - cy
+
+        # Quadratic coefficients: t^2 + bt + c = 0 (a=1)
+        b = 2.0 * (fx * dx + fy * dy)
+        c = fx*fx + fy*fy -radius*radius
+
+        # Discriminant
+        discriminant = b*b-4.0*c
+
+        if discriminant < 0:
+            return None
+        
+        sqrt_disc = math.sqrt(discriminant)
+        t1 = (-b - sqrt_disc)/2.0
+        t2 = (-b + sqrt_disc)/2.0
+
+        candidates = []
+        if t1 > 0:
+            candidates.append(t1)
+        if t2 > 0:
+            candidates.append(t2)
+
+        if not candidates:
+            return None
+        
+        return min(candidates)
+
+    def _reset_people(self):
+        """Initialize people at random positions with random velocities"""
+        self.people = []
+
+        margin = self.people_radius + 0.5
+
+        for _ in range(self.num_people):
+            px = random.uniform(margin, self.room_width - margin)
+            py = random.uniform(margin, self.room_height - margin)
+
+            # random direction
+            angle = random.uniform(0, 2 * math.pi)
+            vx = self.people_speed * math.cos(angle)
+            vy = self.people_speed * math.sin(angle)
+
+            self.people.append({"x": px, "y": py, "angle": angle, "vx": vx, "vy": vy})
+
+    def _is_goal_reached(self) -> bool:
+        if self.goal_x is None or self.goal_y is None:
+            return False
+        dx = self.x - self.goal_x
+        dy = self.y - self.goal_y
+        dist_sq = dx * dx + dy * dy
+        return dist_sq <= self.goal_radius * self.goal_radius
+
+    def _step_people(self):
+        """move people and make them bounce on walls"""
+
+        for p in self.people:
+            p["x"] += p["vx"] * self.dt
+            p["y"] += p["vy"] * self.dt
+            p["angle"] = math.atan2(p["vy"], p["vx"])
+
+            # bounce on vertical walls
+            if p["x"] - self.people_radius < 0:
+                p["x"] = self.people_radius
+                p["vx"] = -p["vx"]
+                p["angle"] = math.atan2(p["vy"], p["vx"])
+            elif p["x"] + self.people_radius > self.room_width:
+                p["x"] = self.room_width - self.people_radius
+                p["vx"] = -p["vx"]
+                p["angle"] = math.atan2(p["vy"], p["vx"])
+            # bounce on horizontal walls
+            if p["y"] - self.people_radius < 0:
+                p["y"] = self.people_radius
+                p["vy"] = -p["vy"]
+                p["angle"] = math.atan2(p["vy"], p["vx"])
+            elif p["y"] + self.people_radius > self.room_height:
+                p["y"] = self.room_height - self.people_radius
+                p["vy"] = -p["vy"]
+                p["angle"] = math.atan2(p["vy"], p["vx"])
+
+    def _is_collision_with_people(self) -> bool:
+        """
+        Check if the robot (a disk with radius robot_radius) 
+        is intersecting with any of the people.
+        """
+        rr = self.robot_radius
+        pr = self.people_radius
+        min_dist_sq = (rr + pr) ** 2
+
+        for p in self.people:
+            dx = self.x - p["x"]
+            dy = self.y - p["y"]
+            dist_sq = dx * dx + dy * dy
+            if dist_sq < min_dist_sq:
+                return True
+        return False
+            
+
+    def render(self):
+        """render the room, robot, and lidar rays using matplotlib"""
+        if self.fig is None:
+            self.fig, self.ax = plt.subplots()
+            plt.ion() # interactive mode ON
+
+        self.ax.clear()
+
+        # Draw room rectangle
+        self.ax.plot(
+            [0, self.room_width, self.room_width, 0, 0],
+            [0, 0, self.room_height, self.room_height, 0],
+            'k-'
+        )
+
+        # Draw robot as a circle
+        robot_circle = plt.Circle((self.x, self.y), self.robot_radius, color='blue', fill=True)
+        self.ax.add_patch(robot_circle)
+
+        arrow_len = self.robot_radius * 1.5
+        x_head = self.x + arrow_len * math.cos(self.theta)
+        y_head = self.y + arrow_len * math.sin(self.theta)
+
+        self.ax.plot(
+            [self.x, x_head],
+            [self.y, y_head],
+            'b-', 
+            linewidth=2
+        )
+
+        # Draw people
+        for p in self.people:
+            person = plt.Circle((p["x"], p["y"]), self.people_radius, color='green', fill=True)
+            x_people_head = p["x"] + 0.3*math.cos(p["angle"])
+            y_people_head = p["y"] + 0.3*math.sin(p["angle"])
+            self.ax.add_patch(person)
+            self.ax.plot(
+                [p["x"], x_people_head],
+                [p["y"], y_people_head],
+                'g-',
+                linewidth=2
+            )
+
+        lidar = self._compute_lidar()
+        angles = [
+            self.theta + i * (2 * math.pi / self.num_rays) for i in range(self.num_rays)
+        ]
+
+        if len(self.trajectory) >= 2:
+            traj_xs, traj_ys = zip(*self.trajectory)
+            self.ax.plot(traj_xs, traj_ys, 'b--', linewidth=1)
+
+        base_grey = (0.6, 0.6, 0.6)
+        base_red = (1.0, 0.0, 0.0)
+
+        # Draw lidar rays
+        for dist, ang in zip(lidar, angles):
+            x_end = self.x + dist * math.cos(ang)
+            y_end = self.y + dist * math.sin(ang)
+
+            max_range_for_color = max(self.room_width, self.room_height)
+            norm_d = min(dist, max_range_for_color) / max_range_for_color
+            proximity = 1.0 - norm_d
+
+
+            r = base_grey[0] + proximity * (base_red[0] - base_grey[0])
+            g = base_grey[1] + proximity * (base_red[1] - base_grey[1])
+            b = base_grey[2] + proximity * (base_red[2] - base_grey[2])
+
+            alpha = 0.9 * proximity
+            rgba = (r, g, b, alpha)
+
+            self.ax.plot([self.x, x_end], [self.y, y_end], color=rgba, linewidth=0.5)
+
+            self.ax.plot(
+                x_end, y_end,
+                marker='o',
+                markersize=2,
+                color=rgba,
+            )
+
+        # Draw goal
+        if self.goal_x is not None and self.goal_y is not None:
+            self.ax.plot(
+                self.goal_x, self.goal_y,
+                marker='*',
+                markersize=7,
+                color='orange',
+            )
+
+        # limits and aspect
+        self.ax.set_xlim(-1, self.room_width + 1)
+        self.ax.set_ylim(-1, self.room_height + 1)
+        self.ax.set_aspect('equal', adjustable='box')
+
+        status_lines = [f"step: {self.step_count}"]
+
+        if self.last_termination_reason is not None:
+            status_lines.append(f"last termination: {self.last_termination_reason}")
+
+        status_text = "\n".join(status_lines)
+
+        self.ax.text(
+            0.01, 0.99,
+            status_text,
+            verticalalignment='top',
+            fontsize=8,
+            bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'),
+        )
+
+        plt.pause(0.001)
+
+    def reset(self):
+        """Reset the environment to an initial state"""
+        self.step_count = 0
+        self.last_termination_reason = None
+
+        self.x = self.room_width / 2.0
+        self.y = self.room_height / 2.0
+        self.theta = 0.0
+        self.trajectory = [(self.x, self.y)]    
+
+        while True:
+            gx = random.uniform(1.0, self.room_width - 1.0)
+            gy = random.uniform(1.0, self.room_height - 1.0)
+            dx = gx - self.x
+            dy = gy - self.y
+            dist = math.sqrt(dx*dx + dy*dy)
+
+            if dist > 2.0:
+                break
+        self.goal_x = gx
+        self.goal_y = gy
+
+        self._reset_people()
+
+        lidar = self._compute_lidar()
+        obs = (self.x, self.y, self.theta, lidar)
+        return obs
+    
+    def _is_collision_with_walls(self) -> bool:
+        """
+        Check if the robot (a disk with radius robot_radius) 
+        is intersecting with the walls of the room.
+        """
+        if self.x - self.robot_radius < 0 or self.x + self.robot_radius > self.room_width:
+            return True
+        if self.y - self.robot_radius < 0 or self.y + self.robot_radius > self.room_height:
+            return True
+        return False
+
+    def _cast_ray(self, angle):
+        """
+        Cast 1 ray from (x,y in direction = angle)
+        Return the distance until it hits a wall.
+        """
+        x0, y0 = self.x, self.y
+        dx = math.cos(angle)
+        dy = math.sin(angle)
+
+        distances = [] # all possible intersections that 1 ray can have, only the minimum will be the important
+
+        eps = 1e-6
+        # Intersection with x = 0
+        if abs(dx) > eps:
+            t = (0 - x0) / dx
+            if t >= 0:
+                y_hit = y0 + t * dy
+                if 0 <= y_hit <= self.room_height:
+                    distances.append(t)
+
+        # Intersection with x = room_width
+        if abs(dx) > eps:
+            t = (self.room_width - x0) / dx
+            if t >= 0:
+                y_hit = y0 + t * dy
+                if 0 <= y_hit <= self.room_height:
+                    distances.append(t)
+
+        # Intersection with y = 0
+        if abs(dy) > eps:
+            t = (0 - y0) / dy
+            if t >= 0:
+                x_hit = x0 + t * dx
+                if 0 <= x_hit <= self.room_width:
+                    distances.append(t)
+
+        # Intersection with y = room_height
+        if abs(dy) > eps:
+            t = (self.room_height - y0) / dy
+            if t >= 0:
+                x_hit = x0 + t * dx
+                if 0 <= x_hit <= self.room_width:
+                    distances.append(t)
+
+        # ------- Intersection with people -------
+        for p in self.people:
+            cx, cy = p["x"], p["y"]
+            t_circle = self._ray_circle_intersection(angle, cx, cy, self.people_radius)
+            if t_circle is not None:
+                distances.append(t_circle)
+
+
+        if len(distances) == 0:
+            return self.max_lidar_distance
+        
+        return min(distances) # for every ray-angle return min computed value, that is the intersection
+    
+    def _compute_lidar(self):
+        """
+        Compute lidar distance for all rays"""
+
+    
+    def step(self, action):
+        """
+        Advance the simulation by one step.
+        For now:
+            - ignore the action
+            - just increase step counter
+        """
+        v, w = action # unpack tuple
+
+        # Differential drive update
+        self.x += v * self.dt * math.cos(self.theta)
+        self.y += v * self.dt * math.sin(self.theta)
+        self.theta += w * self.dt
+
+        self.trajectory.append((self.x, self.y))
+
+
+        self._step_people()
+        self.step_count += 1
+
+        # LiDAR
+        ray_anles = [
+            self.theta,
+            self.theta + math.pi / 4,
+            self.theta - math.pi / 4,
+        ]
+        lidar = self._compute_lidar()
+
+        obs = (self.x, self.y, self.theta, lidar)
+
+        collision_wall = self._is_collision_with_walls()    
+        collision_people = self._is_collision_with_people()
+
+
+        reward = -0.01
+
+        current_distance = np.linalg.norm(np.array([self.x, self.y]) - np.array([self.goal_x, self.goal_y]))
+        reward -= 0.06*current_distance
+
+        done = self.step_count >= self.max_steps
+        info = {}
+        goal_reached = self._is_goal_reached()
+
+        if goal_reached:
+            done = True
+            reward += 10.0
+            info["termination_reason"] = "goal_reached"
+
+        if collision_people:
+            done = True
+            reward -= 10.0
+            info["termination_reason"] = "people_collision"
+        elif collision_wall:
+            done = True
+            reward -= 5.0
+            info["termination_reason"] = "wall_collision"
+        elif self.step_count >= self.max_steps:
+            done = True
+            reward = -1.0
+            info["termination_reason"] = "max_steps_reached"
+
+        if done:
+            self.last_termination_reason = info.get("termination_reason", "unknown")
+
+        return obs, reward, done, info
+    
+    def _compute_lidar(self):
+        """
+        Compute lidar distance for all rays
+        """
+        angles = [self.theta + i * (2 * math.pi / self.num_rays) for i in range(self.num_rays)]
+        distances = [self._cast_ray(angle) for angle in angles]
+
+        # clip values to max_lidar_distance
+        distances = [min(d, self.max_lidar_distance) for d in distances]
+        return distances

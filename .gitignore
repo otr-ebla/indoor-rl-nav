@@ -1,0 +1,24 @@
+# Byte-compiled / cached files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+.conda/
+*.egg-info/
+
+# OS / editor junk
+.DS_Store
+*.swp
+
+# Logs / outputs
+*.log
+ppo_*_tb/
+wandb/
+runs/
+
+# Models (optional, if you don't want to push them)
+*.zip
