@@ -29,15 +29,17 @@ class GymNavEnv(gym.Env):
         # Create internal simulator
         self.env = Simple2DEnv(
             num_rays=num_rays,
-            max_steps=1000,
+            max_steps=400,
             num_people=num_people,
         )
         self.render_mode = render_mode
 
         self.num_rays = num_rays
         self.num_people = num_people
-        obs_dim = 2 + self.num_rays
 
+        self.stack_dim = 5
+        # Pre-allocate a fixed-size flattened lidar buffer (num_rays * stack_dim,)
+        obs_dim = 2 + self.num_rays*self.stack_dim
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -71,9 +73,16 @@ class GymNavEnv(gym.Env):
         lidar = np.array(lidar, dtype=np.float32)
         lidar_norm = np.clip(lidar / self.env.max_lidar_distance, 0.0, 1.0)
 
+        if self.stack_dim > 1:
+            self.lidar_stack.pop(0)
+            self.lidar_stack.append(lidar_norm.copy())
+            lidar_stack = np.concatenate(self.lidar_stack)
+        else:
+            lidar_stack = lidar_norm.astype(np.float32)
+
         obs = np.concatenate([
             [rho, wrapped_angle / np.pi],
-            lidar_norm,
+            lidar_stack,
         ]).astype(np.float32)
 
         return obs
@@ -81,6 +90,15 @@ class GymNavEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
         _ = self.env.reset()
+
+        # Reset the lidar buffer to ensure consistent dimensions
+        if self.stack_dim > 1:
+            lidar = self.env._compute_lidar()
+            lidar = np.array(lidar, dtype=np.float32)
+            lidar_norm = np.clip(lidar / self.env.max_lidar_distance, 0.0, 1.0)
+
+            self.lidar_stack = [lidar_norm.copy() for _ in range(self.stack_dim)]   
+
         obs = self._get_obs()
         info = {}
         return obs, info

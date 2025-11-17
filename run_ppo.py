@@ -8,7 +8,7 @@ from envs.gym_nav_env import GymNavEnv
 from train_ppo import NUM_RAYS   
 
 def main():
-    env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS)
+    env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=50)
 
     model = PPO.load("ppo_gym_nav_env", env=env)
 
@@ -19,6 +19,7 @@ def main():
 
     while True:
         action, _ = model.predict(obs, deterministic=True)
+        print(f"Action taken: v={action[0]:.2f}, w={action[1]:.2f}")
         obs, reward, terminated, truncated, info = env.step(action)
 
         if terminated or truncated:

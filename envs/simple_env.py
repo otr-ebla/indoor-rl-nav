@@ -56,6 +56,9 @@ class Simple2DEnv:
 
         self.people = [] # list of dicts with x,y,vx,vy
 
+        self.obstacles = []
+        self.num_obstacles = 5
+
         # GOAL position
         self.goal_x = None
         self.goal_y = None
@@ -63,6 +66,54 @@ class Simple2DEnv:
 
         self.fig = None
         self.ax = None
+
+    def _ray_rect_intersection(self, angle, xmin, xmax, ymin, ymax):
+        """
+        Compute intersection of a ray from (self.x, self.y) at angle `angle`
+        with an axis-aligned rectangle defined by (xmin, xmax, ymin, ymax).
+        Return the distance to the intersection point, or None if no intersection.
+        """
+        x0, y0 = self.x, self.y
+        dx = math.cos(angle)
+        dy = math.sin(angle)
+
+        eps = 1e-8
+
+        # X slab
+        if abs(dx) < eps:
+            if x0 < xmin or x0 > xmax:
+                return None
+            tmin_x = -math.inf
+            tmax_x = math.inf
+        else:
+            t1 = (xmin - x0) / dx
+            t2 = (xmax - x0) / dx
+            tmin_x = min(t1, t2)
+            tmax_x = max(t1, t2)
+
+        # Y slab
+        if abs(dy) < eps:
+            if y0 < ymin or y0 > ymax:
+                return None
+            tmin_y = -math.inf
+            tmax_y = math.inf
+        else:
+            t1 = (ymin - y0) / dy
+            t2 = (ymax - y0) / dy
+            tmin_y = min(t1, t2)
+            tmax_y = max(t1, t2)
+
+        t_near = max(tmin_x, tmin_y)
+        t_far = min(tmax_x, tmax_y)
+
+        # No intersection or behind the origin
+        if t_near > t_far or t_far < 0:
+            return None
+        
+        if t_near < 0:
+            if t_far >= 0:
+                return t_far
+        return t_near
 
     def _ray_circle_intersection(self, angle, cx, cy, radius):
         """
@@ -102,6 +153,48 @@ class Simple2DEnv:
             return None
         
         return min(candidates)
+    
+    def _reset_obstacles(self):
+        """
+        Initialize random static obstacles:
+        - circles
+        - axis-aligned rectangles
+        For now they are just visual + LiDAR obstacles (no collisions/physics yet).
+        """
+        self.obstacles = []
+        margin = 1.0
+
+        num_circles = self.num_obstacles // 2
+        num_rects = self.num_obstacles - num_circles
+
+        # ---- Circles ----
+        for _ in range(num_circles):
+            radius = random.uniform(0.6, 1.5)
+            cx = random.uniform(margin + radius, self.room_width - margin - radius)
+            cy = random.uniform(margin + radius, self.room_height - margin - radius)
+
+            self.obstacles.append({"type": "circle", 
+                                   "cx": cx, 
+                                   "cy": cy, 
+                                   "radius": radius})
+            
+        # ---- Rectangles ----    
+        for _ in range(num_rects):
+            w = random.uniform(1.0, 3.0)
+            h = random.uniform(1.0, 3.0)
+            cx = random.uniform(margin + w/2.0, self.room_width - margin - w/2.0)
+            cy = random.uniform(margin + h/2.0, self.room_height - margin - h/2.0)
+
+            xmin = cx - w/2.0
+            xmax = cx + w/2.0
+            ymin = cy - h/2.0
+            ymax = cy + h/2.0
+
+            self.obstacles.append({"type": "rect",
+                                   "xmin": xmin,
+                                   "xmax": xmax,
+                                   "ymin": ymin,
+                                   "ymax": ymax})
 
     def _reset_people(self):
         """Initialize people at random positions with random velocities"""
@@ -127,6 +220,60 @@ class Simple2DEnv:
         dy = self.y - self.goal_y
         dist_sq = dx * dx + dy * dy
         return dist_sq <= self.goal_radius * self.goal_radius
+
+    def _handle_person_obstacle_collisions(self, p):
+        """
+        Resolve collisions between one person (disk) and all static obstacles.
+        Simple resolution: push person out and reflect velocity.
+        """
+        pr = self.people_radius
+        for obs in self.obstacles:
+            if obs["type"] == "circle":
+                cx, cy, radius = obs["cx"], obs["cy"], obs["radius"]
+                dx = p["x"] - cx
+                dy = p["y"] - cy
+                dist_sq = dx*dx + dy*dy
+                min_dist = pr + radius
+                if dist_sq < min_dist * min_dist:
+                    dist = math.sqrt(dist_sq)
+                    if dist == 0:
+                        dist = 1e-6
+                    overlap = min_dist - dist
+                    nx = dx / dist
+                    ny = dy / dist
+                    p["x"] += nx * overlap
+                    p["y"] += ny * overlap
+
+                    # Reflect velocity
+                    v_dot_n = p["vx"] * nx + p["vy"] * ny
+                    p["vx"] -= 2 * v_dot_n * nx
+                    p["vy"] -= 2 * v_dot_n * ny
+                    p["angle"] = math.atan2(p["vy"], p["vx"])
+            elif obs["type"] == "rect":
+                xmin, xmax = obs["xmin"], obs["xmax"]
+                ymin, ymax = obs["ymin"], obs["ymax"]
+
+                closest_x = max(xmin, min(p["x"], xmax))
+                closest_y = max(ymin, min(p["y"], ymax))
+
+                dx = p["x"] - closest_x
+                dy = p["y"] - closest_y
+                dist_sq = dx*dx + dy*dy
+                if dist_sq < pr * pr:
+                    dist = math.sqrt(dist_sq)
+                    if dist == 0:
+                        dist = 1e-6
+                    overlap = pr - dist
+                    nx = dx / dist
+                    ny = dy / dist
+                    p["x"] += nx * overlap
+                    p["y"] += ny * overlap
+
+                    # Reflect velocity
+                    v_dot_n = p["vx"] * nx + p["vy"] * ny
+                    p["vx"] -= 2 * v_dot_n * nx
+                    p["vy"] -= 2 * v_dot_n * ny
+                    p["angle"] = math.atan2(p["vy"], p["vx"])
 
     def _step_people(self):
         """move people and make them bounce on walls"""
@@ -155,6 +302,8 @@ class Simple2DEnv:
                 p["vy"] = -p["vy"]
                 p["angle"] = math.atan2(p["vy"], p["vx"])
 
+            self._handle_person_obstacle_collisions(p)
+
     def _is_collision_with_people(self) -> bool:
         """
         Check if the robot (a disk with radius robot_radius) 
@@ -172,6 +321,35 @@ class Simple2DEnv:
                 return True
         return False
             
+    def _is_collision_with_obstacles(self) -> bool:
+        """
+        Check if the robot (a disk with radius robot_radius) 
+        is intersecting with any of the static obstacles.
+        """
+        rr = self.robot_radius
+
+        for obs in self.obstacles:
+            if obs["type"] == "circle":
+                cx, cy, radius = obs["cx"], obs["cy"], obs["radius"]
+                dx = self.x - cx
+                dy = self.y - cy
+                dist_sq = dx*dx + dy*dy
+                min_dist = rr + radius
+                if dist_sq < min_dist * min_dist:
+                    return True
+            elif obs["type"] == "rect":
+                xmin, xmax = obs["xmin"], obs["xmax"]
+                ymin, ymax = obs["ymin"], obs["ymax"]
+
+                closest_x = max(xmin, min(self.x, xmax))
+                closest_y = max(ymin, min(self.y, ymax))
+
+                dx = self.x - closest_x
+                dy = self.y - closest_y
+                dist_sq = dx*dx + dy*dy
+                if dist_sq < rr * rr:
+                    return True
+        return False
 
     def render(self):
         """render the room, robot, and lidar rays using matplotlib"""
@@ -187,6 +365,22 @@ class Simple2DEnv:
             [0, 0, self.room_height, self.room_height, 0],
             'k-'
         )
+
+        # Draw static obstacles
+        for obs in self.obstacles:
+            if obs["type"] == "circle":
+                circle = plt.Circle((obs["cx"], obs["cy"]), obs["radius"], color='gray', alpha=0.7, fill=True)
+                self.ax.add_patch(circle)
+            elif obs["type"] == "rect":
+                rect = plt.Rectangle(
+                    (obs["xmin"], obs["ymin"]),
+                    obs["xmax"] - obs["xmin"],
+                    obs["ymax"] - obs["ymin"],
+                    color='gray',
+                    alpha=0.7,
+                    fill=True
+                )
+                self.ax.add_patch(rect)
 
         # Draw robot as a circle
         robot_circle = plt.Circle((self.x, self.y), self.robot_radius, color='blue', fill=True)
@@ -283,7 +477,7 @@ class Simple2DEnv:
             bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'),
         )
 
-        plt.pause(0.001)
+        plt.pause(0.00001)
 
     def reset(self):
         """Reset the environment to an initial state"""
@@ -308,6 +502,7 @@ class Simple2DEnv:
         self.goal_y = gy
 
         self._reset_people()
+        self._reset_obstacles()
 
         lidar = self._compute_lidar()
         obs = (self.x, self.y, self.theta, lidar)
@@ -375,6 +570,19 @@ class Simple2DEnv:
             if t_circle is not None:
                 distances.append(t_circle)
 
+        # ------- Intersection with obstacles -------
+        for obs in self.obstacles:
+            if obs["type"] == "circle":
+                cx, cy, radius = obs["cx"], obs["cy"], obs["radius"]
+                t_circle = self._ray_circle_intersection(angle, cx, cy, radius)
+                if t_circle is not None:
+                    distances.append(t_circle)
+            elif obs["type"] == "rect":
+                xmin, xmax = obs["xmin"], obs["xmax"]
+                ymin, ymax = obs["ymin"], obs["ymax"]
+                t_rect = self._ray_rect_intersection(angle, xmin, xmax, ymin, ymax)
+                if t_rect is not None:
+                    distances.append(t_rect)
 
         if len(distances) == 0:
             return self.max_lidar_distance
@@ -418,6 +626,7 @@ class Simple2DEnv:
 
         collision_wall = self._is_collision_with_walls()    
         collision_people = self._is_collision_with_people()
+        collision_obstacles = self._is_collision_with_obstacles()
 
 
         reward = -0.01
@@ -431,7 +640,7 @@ class Simple2DEnv:
 
         if goal_reached:
             done = True
-            reward += 10.0
+            reward += 200.0
             info["termination_reason"] = "goal_reached"
 
         if collision_people:
@@ -442,6 +651,10 @@ class Simple2DEnv:
             done = True
             reward -= 5.0
             info["termination_reason"] = "wall_collision"
+        elif collision_obstacles:
+            done = True
+            reward -= 10.0
+            info["termination_reason"] = "obstacle_collision"
         elif self.step_count >= self.max_steps:
             done = True
             reward = -1.0
