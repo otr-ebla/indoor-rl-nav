@@ -436,7 +436,7 @@ class Simple2DEnv:
 
         if collision_people:
             done = True
-            reward -= 10.0
+            reward -= 20.0
             info["termination_reason"] = "people_collision"
         elif collision_wall:
             done = True
