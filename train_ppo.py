@@ -56,28 +56,28 @@ def main():
     #     gradient_steps=1,
     #     ent_coef='auto',
     # )
-    model = TQC(
-        "MlpPolicy",
-        env,
-        device="cpu",
-        verbose=1,
-        learning_rate=3e-4,
-        buffer_size=1000000,
-        batch_size=256,
-        tau=0.005,
-        gamma=0.99,
-        train_freq=1,
-        gradient_steps=1,
-        ent_coef='auto',
-        policy_kwargs=dict(net_arch=[128, 128]),
-    )
+    # model = TQC(
+    #     "MlpPolicy",
+    #     env,
+    #     device="cpu",
+    #     verbose=1,
+    #     learning_rate=3e-4,
+    #     buffer_size=1000000,
+    #     batch_size=256,
+    #     tau=0.005,
+    #     gamma=0.99,
+    #     train_freq=1,
+    #     gradient_steps=1,
+    #     ent_coef='auto',
+    #     policy_kwargs=dict(net_arch=[128, 128]),
+    # )
 
-    total_timesteps = 20000000
-    print(f"Training TQC with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
+    total_timesteps = 15000000
+    print(f"Training PPO with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
 
     model.learn(total_timesteps=total_timesteps)
 
-    model.save("tqc_gym_nav_env")
+    model.save("ppo_gym_nav_env2")
 
     print("Training completed and model saved.")
 

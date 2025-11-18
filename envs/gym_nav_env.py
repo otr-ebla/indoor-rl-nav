@@ -5,7 +5,7 @@ import numpy as np
 from envs.simple_env import Simple2DEnv
 
 MAX_LIN_VEL = 1.0  # m/s
-MAX_ANG_VEL = 3.0  # rad/s
+MAX_ANG_VEL = 1.0  # rad/s
 
 
 class GymNavEnv(gym.Env):

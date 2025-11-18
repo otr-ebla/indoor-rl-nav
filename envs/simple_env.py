@@ -518,7 +518,7 @@ class Simple2DEnv:
 
         self.x = self.room_width / 2.0
         self.y = self.room_height / 2.0
-        self.theta = 0.0
+        self.theta = np.random.uniform(0, 2 * math.pi)
         
 
 
@@ -692,15 +692,15 @@ class Simple2DEnv:
 
         if collision_people:
             done = True
-            reward -= 20.0
+            reward -= 50.0
             info["termination_reason"] = "people_collision"
         elif collision_wall:
             done = True
-            reward -= 5.0
+            reward -= 50.0
             info["termination_reason"] = "wall_collision"
         elif collision_obstacles:
             done = True
-            reward -= 10.0
+            reward -= 50.0
             info["termination_reason"] = "obstacle_collision"
         elif self.step_count >= self.max_steps:
             done = True
