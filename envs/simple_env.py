@@ -484,7 +484,7 @@ class Simple2DEnv:
             bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'),
         )
 
-        plt.pause(0.00001)
+        plt.pause(0.0001)
 
     def _point_inside_obstacle(self, x, y, obs):
         """

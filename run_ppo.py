@@ -11,7 +11,7 @@ from train_ppo import NUM_RAYS
 def main():
     env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=50)
 
-    model = PPO.load("ppo_gym_nav_env", env=env)
+    model = PPO.load("ppo_gym_nav_env2", env=env)
 
     obs, info = env.reset()
     done = False

@@ -41,7 +41,7 @@ class GymNavEnv(gym.Env):
         self.num_rays = num_rays
         self.num_people = num_people
 
-        self.stack_dim = 5
+        self.stack_dim = 10
         # Pre-allocate a fixed-size flattened lidar buffer (num_rays * stack_dim,)
         obs_dim = 2 + self.num_rays*self.stack_dim
 
