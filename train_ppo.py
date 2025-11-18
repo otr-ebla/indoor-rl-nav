@@ -3,6 +3,7 @@ from stable_baselines3 import PPO, SAC
 from sb3_contrib import TQC
 from envs.gym_nav_env import GymNavEnv
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+import tensorboard
 
 NUM_RAYS = 60
 NUM_PEOPLE = 20
@@ -27,20 +28,20 @@ def main():
         env = DummyVecEnv([make_env(i) for i in range(N_ENVS)])
 
 
-    # model = PPO(
-    #     "MlpPolicy",
-    #     env,
-    #     device="cpu",
-    #     verbose=1,
-    #     learning_rate=3e-4,
-    #     n_steps=2048,
-    #     batch_size=64,
-    #     n_epochs=10,
-    #     gamma=0.99,
-    #     gae_lambda=0.95,
-    #     clip_range=0.2,
-    #     ent_coef=0.0,
-    # )
+    model = PPO(
+        "MlpPolicy",
+        env,
+        device="cpu",
+        verbose=1,
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+    )
     # model = SAC(
     #     "MlpPolicy",
     #     env,
@@ -71,7 +72,7 @@ def main():
         policy_kwargs=dict(net_arch=[128, 128]),
     )
 
-    total_timesteps = 10000000
+    total_timesteps = 20000000
     print(f"Training TQC with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
 
     model.learn(total_timesteps=total_timesteps)

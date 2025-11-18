@@ -4,6 +4,10 @@ import numpy as np
 
 from envs.simple_env import Simple2DEnv
 
+MAX_LIN_VEL = 1.0  # m/s
+MAX_ANG_VEL = 3.0  # rad/s
+
+
 class GymNavEnv(gym.Env):
     """
     Gymnasium-compatible wrapper around Simple2DEnv.
@@ -40,6 +44,9 @@ class GymNavEnv(gym.Env):
         self.stack_dim = 5
         # Pre-allocate a fixed-size flattened lidar buffer (num_rays * stack_dim,)
         obs_dim = 2 + self.num_rays*self.stack_dim
+
+        self.lidar_stack = None
+
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -48,8 +55,8 @@ class GymNavEnv(gym.Env):
         )
 
         self.action_space = spaces.Box(
-            low=np.array([0.0, -1.0]), 
-            high=np.array([1.0, 1.0]), 
+            low=np.array([0.0, -MAX_ANG_VEL]), 
+            high=np.array([MAX_LIN_VEL, MAX_ANG_VEL]), 
             dtype = np.float32,
         )
 
@@ -74,9 +81,12 @@ class GymNavEnv(gym.Env):
         lidar_norm = np.clip(lidar / self.env.max_lidar_distance, 0.0, 1.0)
 
         if self.stack_dim > 1:
-            self.lidar_stack.pop(0)
-            self.lidar_stack.append(lidar_norm.copy())
-            lidar_stack = np.concatenate(self.lidar_stack)
+            if self.lidar_stack is None:
+                self.lidar_stack = [lidar_norm.copy() for _ in range(self.stack_dim)]
+            else:
+                self.lidar_stack.pop(0)
+                self.lidar_stack.append(lidar_norm.copy())
+            lidar_stack = np.concatenate(self.lidar_stack, axis=0)
         else:
             lidar_stack = lidar_norm.astype(np.float32)
 
@@ -105,8 +115,8 @@ class GymNavEnv(gym.Env):
     
     def step(self, action):
         action = np.asarray(action, dtype=np.float32)
-        v = float(np.clip(action[0], 0.0, 1.0))
-        w = float(np.clip(action[1], -1.0, 1.0))
+        v = float(np.clip(action[0], 0.0, MAX_LIN_VEL))
+        w = float(np.clip(action[1], -MAX_ANG_VEL, MAX_ANG_VEL))
 
         _, reward, done, info = self.env.step((v, w))
         obs = self._get_obs()

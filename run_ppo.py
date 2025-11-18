@@ -2,7 +2,8 @@
 
 import time
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
+from sb3_contrib import TQC
 
 from envs.gym_nav_env import GymNavEnv
 from train_ppo import NUM_RAYS   
@@ -10,7 +11,7 @@ from train_ppo import NUM_RAYS
 def main():
     env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=50)
 
-    model = PPO.load("ppo_gym_nav_env", env=env)
+    model = SAC.load("sac_gym_nav_env", env=env)
 
     obs, info = env.reset()
     done = False

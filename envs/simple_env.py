@@ -57,7 +57,7 @@ class Simple2DEnv:
         self.people = [] # list of dicts with x,y,vx,vy
 
         self.obstacles = []
-        self.num_obstacles = 5
+        self.num_obstacles = 10
 
         # GOAL position
         self.goal_x = None
@@ -203,13 +203,18 @@ class Simple2DEnv:
         margin = self.people_radius + 0.5
 
         for _ in range(self.num_people):
-            px = random.uniform(margin, self.room_width - margin)
-            py = random.uniform(margin, self.room_height - margin)
+            px, py = self.x, self.y
+            while np.linalg.norm(np.array([px, py]) - np.array([self.x, self.y])) < 1.0:
+                px = random.uniform(margin, self.room_width - margin)
+                py = random.uniform(margin, self.room_height - margin)
+            while self._point_inside_any_obstacle(px, py):
+                px = random.uniform(margin, self.room_width - margin)
+                py = random.uniform(margin, self.room_height - margin)
 
             # random direction
             angle = random.uniform(0, 2 * math.pi)
-            vx = self.people_speed * math.cos(angle)
-            vy = self.people_speed * math.sin(angle)
+            vx = self.people_speed * math.cos(angle) * random.uniform(0.5, 1.0)
+            vy = self.people_speed * math.sin(angle) * random.uniform(0.5, 1.0)
 
             self.people.append({"x": px, "y": py, "angle": angle, "vx": vx, "vy": vy})
 
@@ -427,10 +432,12 @@ class Simple2DEnv:
             x_end = self.x + dist * math.cos(ang)
             y_end = self.y + dist * math.sin(ang)
 
-            max_range_for_color = max(self.room_width, self.room_height)
-            norm_d = min(dist, max_range_for_color) / max_range_for_color
-            proximity = 1.0 - norm_d
-
+            # max_range_for_color = max(self.room_width, self.room_height)
+            # norm_d = min(dist, max_range_for_color) / max_range_for_color
+            # proximity = (1.0 - norm_d) ** 2
+            color_ray_dist = 5.0
+            norm_d = min(dist, color_ray_dist) / color_ray_dist
+            proximity = (1.0 - norm_d) 
 
             r = base_grey[0] + proximity * (base_red[0] - base_grey[0])
             g = base_grey[1] + proximity * (base_red[1] - base_grey[1])
@@ -479,6 +486,31 @@ class Simple2DEnv:
 
         plt.pause(0.00001)
 
+    def _point_inside_obstacle(self, x, y, obs):
+        """
+        Return True if point (x,y) is inside the given obstacle
+        """
+        if obs["type"] == "circle":
+            cx, cy, radius = obs["cx"], obs["cy"], obs["radius"]
+            dx = x - cx
+            dy = y - cy
+            dist_sq = dx*dx + dy*dy
+            return dist_sq < radius * radius
+        elif obs["type"] == "rect":
+            xmin, xmax = obs["xmin"], obs["xmax"]
+            ymin, ymax = obs["ymin"], obs["ymax"]
+            return xmin <= x <= xmax and ymin <= y <= ymax
+        return False
+
+    def _point_inside_any_obstacle(self, x, y):
+        """
+        Return True if point (x,y) is inside any obstacle
+        """
+        for obs in self.obstacles:
+            if self._point_inside_obstacle(x, y, obs):
+                return True
+        return False
+
     def reset(self):
         """Reset the environment to an initial state"""
         self.step_count = 0
@@ -487,6 +519,18 @@ class Simple2DEnv:
         self.x = self.room_width / 2.0
         self.y = self.room_height / 2.0
         self.theta = 0.0
+        
+
+
+        
+        self._reset_obstacles()
+        margin = self.robot_radius + 1.3
+        if self._is_collision_with_obstacles() or self._is_collision_with_walls():
+            while True:
+                self.x = random.uniform(margin, self.room_width - margin)
+                self.y = random.uniform(margin, self.room_height - margin)
+                if not self._is_collision_with_obstacles() and not self._is_collision_with_walls():
+                    break
         self.trajectory = [(self.x, self.y)]    
 
         while True:
@@ -496,13 +540,16 @@ class Simple2DEnv:
             dy = gy - self.y
             dist = math.sqrt(dx*dx + dy*dy)
 
-            if dist > 2.0:
-                break
+            if dist < 2.0:
+                continue
+            if self._point_inside_any_obstacle(gx, gy):
+                continue
+            break
+
         self.goal_x = gx
         self.goal_y = gy
 
         self._reset_people()
-        self._reset_obstacles()
 
         lidar = self._compute_lidar()
         obs = (self.x, self.y, self.theta, lidar)
