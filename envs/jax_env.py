@@ -534,16 +534,19 @@ def reset(rng_key: jnp.ndarray,
     dxg = goal_pos[0] - state.x
     dyg = goal_pos[1] - state.y
     dist_to_goal = jnp.sqrt(dxg * dxg + dyg * dyg)
+    dist_norm = dist_to_goal / jnp.sqrt(cfg.room_width**2 + cfg.room_height**2)
 
     goal_global_angle = jnp.arctan2(dyg, dxg)
     angle_to_goal = goal_global_angle - state.theta
     angle_to_goal = jnp.arctan2(jnp.sin(angle_to_goal), jnp.cos(angle_to_goal))
+    angle_norm = angle_to_goal / jnp.pi  # Normalized between -1 and 1
 
     lidar = lidar_scan(state, cfg, obstacles, rect_obst)
+    lidar_norm = lidar / cfg.max_lidar_distance
 
     obs = jnp.concatenate([
-            jnp.array([dist_to_goal, angle_to_goal], dtype=jnp.float32), 
-            lidar
+            jnp.array([dist_norm, angle_norm], dtype=jnp.float32), 
+            lidar_norm
             ], 
         axis=0)
         
@@ -856,14 +859,17 @@ def step(state: EnvState,
         obstacles: Obstacles,
         rect_obst: RectObstacles,):
     """
-    One simulation step.
+    One simulation step with Improved Reward Function.
     """
+    # --- 1. Fisica e Movimento (Kinematics) ---
     v_cmd = action[0]
     w_cmd = action[1]
 
-    v = jnp.clip(v_cmd, -cfg.max_lin_vel, cfg.max_lin_vel)
+    # Clipping per sicurezza fisica
+    v = jnp.clip(v_cmd, 0.0, cfg.max_lin_vel) # Nota: 0.0 min se non vuoi retromarcia
     w = jnp.clip(w_cmd, -cfg.max_ang_vel, cfg.max_ang_vel)
 
+    # Euler integration
     dx = v * jnp.cos(state.theta) * cfg.dt
     dy = v * jnp.sin(state.theta) * cfg.dt
     dtheta = w * cfg.dt
@@ -872,29 +878,25 @@ def step(state: EnvState,
     y_new = state.y + dy
     theta_new = state.theta + dtheta
 
-    # ---- Keep the robot inside the room ----
+    # Keep inside room (clipping hard)
     x_new = jnp.clip(x_new, 0.0, cfg.room_width)
     y_new = jnp.clip(y_new, 0.0, cfg.room_height)
 
-    # ---- Update people positions ----
-    #people_pos_prop = state.people_positions + state.people_vel * cfg.dt
+    # --- 2. Aggiornamento Persone ---
     people_pos_prop = state.people_positions + state.people_vel * cfg.dt
 
-
-    # ---- Robust bouncing vs obstacles and walls ----
+    # Robust bouncing (Persone rimbalzano sui muri/ostacoli)
     people_pos_new, people_vel_new = _bounce_people_on_obstacles(
-        people_pos_prop,       # Posizioni proposte
-        state.people_vel,      # Velocità attuali
-        obstacles,             # Ostacoli circolari
-        rect_obst,             # Ostacoli rettangolari
-        cfg.people_radius,     # <--- Passa il valore float, non tutto 'cfg'
-        cfg.room_width,        # <--- Passa width esplicito
-        cfg.room_height,       # <--- Passa height esplicito
-        max_iterations=3       # (Opzionale, default è 10 ma 3 basta per performance)
+        people_pos_prop, state.people_vel, obstacles, rect_obst,
+        cfg.people_radius, cfg.room_width, cfg.room_height, max_iterations=2
     )
     
+    # --- 3. Calcolo Distanze PRE-UPDATE (Per il reward di progressione) ---
+    dxg_old = state.goal_pos[0] - state.x
+    dyg_old = state.goal_pos[1] - state.y
+    dist_to_goal_old = jnp.sqrt(dxg_old**2 + dyg_old**2)
 
-    # Build new EnvState
+    # --- 4. Creazione Nuovo Stato ---
     new_state = EnvState(
         step = state.step + jnp.int32(1),
         x = x_new,
@@ -905,86 +907,74 @@ def step(state: EnvState,
         goal_pos = state.goal_pos,
     )
 
-    #lidar = lidar_scan(new_state, cfg)
-    lidar = lidar_scan(new_state, cfg, obstacles, rect_obst)
-
-    obs = jnp.concatenate([
-        jnp.array([new_state.x, new_state.y, new_state.theta], dtype=jnp.float32),
-        lidar,
-        ], 
-    axis=0)
-
-    # ----- Collision checks with obstacles and people ----
-    gap_obst = _min_gap_to_circles(
-        new_state.x,
-        new_state.y,
-        obstacles.centers,
-        obstacles.radii,
-        cfg.robot_radius,
-    )
-
+    # --- 5. Collision Check (Robot vs World) ---
+    # Ostacoli circolari
+    gap_obst = _min_gap_to_circles(new_state.x, new_state.y, obstacles.centers, obstacles.radii, cfg.robot_radius)
+    
+    # Ostacoli rettangolari
+    gap_rects = _min_gap_to_rectangles(new_state.x, new_state.y, rect_obst, cfg.robot_radius)
+    
+    # Persone
     if cfg.num_people > 0:
         people_radii = jnp.full((cfg.num_people,), cfg.people_radius, dtype=jnp.float32)
-        gap_people = _min_gap_to_circles(
-            new_state.x,
-            new_state.y,
-            new_state.people_positions,
-            people_radii,
-            cfg.robot_radius,
-        )
+        gap_people = _min_gap_to_circles(new_state.x, new_state.y, new_state.people_positions, people_radii, cfg.robot_radius)
     else:
         gap_people = jnp.array(jnp.inf, dtype=jnp.float32)
-
-    # Rectangles
-    gap_rects = _min_gap_to_rectangles(
-        new_state.x,
-        new_state.y,
-        rect_obst,
-        cfg.robot_radius,
-    )
 
     min_gap = jnp.minimum(jnp.minimum(gap_obst, gap_people), gap_rects)
     collision = min_gap < 0.0
 
-    # ---- reward and done usinf LiDAR + collision ----
-    min_dist = jnp.min(lidar)
-    base_reward = (min_dist/cfg.max_lidar_distance) # convert to python float
+    # --- 6. Calcolo Goal ---
+    dxg_new = new_state.goal_pos[0] - new_state.x
+    dyg_new = new_state.goal_pos[1] - new_state.y
+    dist_to_goal_new = jnp.sqrt(dxg_new**2 + dyg_new**2)
+    
+    reached_goal = dist_to_goal_new <= cfg.goal_radius
 
-    collision_penalty = jnp.where(collision, -cfg.goal_reward, 0.0) # convert to python float
+    # --- 7. REWARD ENGINEERING (La parte importante) ---
+    
+    # A. Sparse Reward: Collisione (Penalità forte)
+    r_collision = jnp.where(collision, -10.0, 0.0)
 
-    # --- Goal Check ---
-    gx, gy = new_state.goal_pos[0], new_state.goal_pos[1]
-    dxg = gx - new_state.x
-    dyg = gy - new_state.y
-    dist_to_goal = jnp.sqrt(dxg**2 + dyg**2)
+    # B. Sparse Reward: Goal (Bonus forte)
+    r_goal = jnp.where(reached_goal, 10.0, 0.0)
 
-    # Angolo del goal rispetto al robot (nel frame globale)
-    goal_global_angle = jnp.arctan2(dyg, dxg)
+    progress = (dist_to_goal_old - dist_to_goal_new)
+    r_progress = progress * 5.0 
 
-    # Angolo del goal rispetto alla direzione del robot (nel frame del robot)
+    # D. Dense Reward: Time Penalty (Esistenza)
+    # Penalizza il robot per ogni secondo perso. Lo spinge a correre.
+    r_time = -0.01 
+    
+    # E. Smoothness penalty (Opzionale ma consigliato)
+    # Penalizza movimenti bruschi del volante (w) per evitare che vibri.
+    r_action = -0.05 * (w_cmd**2)
+
+    # Somma totale
+    reward = r_collision + r_goal + r_progress + r_time + r_action
+
+    # --- 8. Osservazioni e Done ---
+    lidar = lidar_scan(new_state, cfg, obstacles, rect_obst)
+    lidar_norm = lidar / cfg.max_lidar_distance
+    
+    dist_norm = dist_to_goal_new / jnp.sqrt(cfg.room_width**2 + cfg.room_height**2)
+
+    # Angolo relativo al goal
+    goal_global_angle = jnp.arctan2(dyg_new, dxg_new)
     angle_to_goal = goal_global_angle - new_state.theta
-    # Normalizza l'angolo tra [-pi, pi]
     angle_to_goal = jnp.arctan2(jnp.sin(angle_to_goal), jnp.cos(angle_to_goal))
+    angle_norm = angle_to_goal / jnp.pi  # Normalized between -1 and 1
 
-    # --- Costruzione dell'Osservazione Finale ---
-    # Rimuovi x, y, theta (coordinate globali) e usa solo i dati locali:
     obs = jnp.concatenate([
-        jnp.array([dist_to_goal, angle_to_goal], dtype=jnp.float32), # Polari
-        lidar,
-        ], 
-    axis=0)
+        jnp.array([dist_norm, angle_norm], dtype=jnp.float32), 
+        lidar_norm,
+        ], axis=0)
 
-    reached_goal = dist_to_goal <= cfg.goal_radius  
+    # Done se: collisione OR goal raggiunto OR troppo vicino al muro (lidar < safety)
+    # Nota: safety_margin sul lidar è utile per evitare che si incastri, ma se collision check è buono basta quello.
+    done = collision | reached_goal
 
-    goal_bonus = jnp.where(reached_goal, cfg.goal_reward, 0.0)# convert to python float
-
-    reward = base_reward + collision_penalty + goal_bonus
-
-    safety_margin = 0.2
-    done = (min_dist < safety_margin) | collision | reached_goal # convert to python bool
- 
-
-    return new_state, obs, reward, done 
+    return new_state, obs, reward, done
 
 @partial(jax.jit, static_argnums=(3,))
 def auto_reset_step(
@@ -1272,11 +1262,6 @@ def lidar_scan(
 
 
 
-
-
-
-
-
 def render(state: EnvState, 
     cfg: StaticConfig, 
     ax=None, 
@@ -1424,118 +1409,6 @@ def render(state: EnvState,
 
 
 
-def fast_rollout(num_steps: int = 10000):
-    static_cfg = StaticConfig(
-        dt=0.1,
-        room_width=15.0,
-        room_height=15.0,
-        max_lin_vel=1.0,
-        max_ang_vel=jnp.pi,
-        robot_radius=0.2,
-        num_rays=108,
-        max_lidar_distance=20.0,
-        num_people=15,
-        people_radius=0.2,
-
-        min_circ_obstacles=2,
-        max_circ_obstacles=7,
-        obst_min_radius=0.3,
-        obst_max_radius=1.5,
-        obst_clearance=0.2,
-
-        min_rect_obstacles=1,
-        max_rect_obstacles=5,
-        rect_min_width=1.0,
-        rect_max_width=3.0,
-        rect_min_height=1.0,
-        rect_max_height=3.0,
-
-        goal_radius=0.3,
-        goal_min_robot_dist=3.0,
-        goal_reward=10.0,
-    )
-
-    rng_key = jrandom.PRNGKey(0)
-    rng_key, state, obs, obstacles, rect_obst = reset(rng_key, static_cfg)
-
-    step_fn = make_step_fn(static_cfg, obstacles, rect_obst)
-    action = jnp.array([0.5, 0.3], dtype=jnp.float32)
-
-    state, obs, reward, done = step_fn(state, action)  # warm-up JIT
-
-    t0 = time.time()
-    steps_done = 0
-    for t in range(num_steps):
-        state, obs, reward, done = step_fn(state, action)
-        steps_done += 1
-
-        if done:
-            rng_key, state, obs, obstacles, rect_obst = reset(rng_key, static_cfg)
-            step_fn = make_step_fn(static_cfg, obstacles, rect_obst)
-            break
-    t1 = time.time()
-
-    fps = steps_done / (t1 - t0)
-    print(f"Fast rollout: {steps_done} steps, ~{fps:.1f} FPS (no render, no sleep)")
 
 
 
-
-
-
-
-
-
-
-# ... (fine delle definizioni delle funzioni) ...
-
-if __name__ == "__main__":
-    # Configurazione
-    static_cfg = StaticConfig(
-        dt=0.1, 
-        room_width=15.0, room_height=15.0, max_lin_vel=1.0, max_ang_vel=jnp.pi,
-        robot_radius=0.2, num_rays=108, max_lidar_distance=20.0, num_people=10, people_radius=0.2,
-        min_circ_obstacles=2, max_circ_obstacles=5, obst_min_radius=0.3, obst_max_radius=1.5, obst_clearance=0.2,
-        min_rect_obstacles=2, max_rect_obstacles=6, rect_min_width=1.0, rect_max_width=3.0, rect_min_height=1.0, rect_max_height=3.0,
-        goal_radius=0.3, goal_min_robot_dist=3.0, goal_reward=10.0,
-    )
-
-    rng_key = jrandom.PRNGKey(int(time.time()))
-    action = jnp.array([0.5, 0.3], dtype=jnp.float32)
-
-    num_episodes = 5
-    max_steps_per_episode = 200 
-
-    # Prepariamo la funzione step JIT-tata UNA VOLTA SOLA
-    # static_argnums=(2,) corrisponde a 'cfg' che è il terzo argomento (indice 2)
-    # step(state, action, cfg, obstacles, rect_obst)
-    jit_step = jax.jit(step, static_argnums=(2,))
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-
-    for ep in range(num_episodes):
-        print(f"=== Episodio {ep} ===")
-        
-        # Reset
-        rng_key, reset_key = jrandom.split(rng_key)
-        _, state, obs, obstacles, rect_obst = reset(reset_key, static_cfg)
-        
-        done = False
-        for t in range(max_steps_per_episode):
-            t0 = time.time()
-
-            # Step (usiamo la versione jittata direttamente)
-            # Nota: non usiamo auto_reset_step qui perché vogliamo vedere l'episodio finire
-            state, obs, reward, done = jit_step(state, action, static_cfg, obstacles, rect_obst)
-
-            # Render
-            render(state, static_cfg, ax=ax, obstacles=obstacles, rect_obst=rect_obst)
-            
-            # Pausa per visualizzazione
-            plt.pause(0.01) 
-
-            if done:
-                print(f"Episodio terminato a step {state.step}")
-                break
-                
-    plt.show()

@@ -1,11 +1,11 @@
 import os
 
+# --- RIMOSSO: Non forzare path manuali, usiamo l'ambiente Conda configurato correttamente ---
+# os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=..." 
+
+# Imposta il backend preferito (opzionale, JAX lo fa in automatico se vede le GPU, ma aiuta)
 os.environ["JAX_PLATFORMS"] = "cuda"
-os.environ["JAX_PLATFORM_NAME"] = "cuda"
-os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/home/LABAUT/alberto_vaglio/cuda12-local"
 
-
-# === SOLO ORA POSSIAMO IMPORTARE JAX ===
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -17,8 +17,7 @@ from flax.serialization import to_bytes, from_bytes
 import matplotlib.pyplot as plt
 from typing import NamedTuple, Tuple
 
-# Assicurati che l'import sia corretto per la tua struttura cartelle
-# Se jax_env.py è nella stessa cartella, usa: from jax_env import ...
+# Import envs
 from envs.jax_env import (
     EnvState, StaticConfig, reset, Obstacles, RectObstacles, 
     auto_reset_step, 
@@ -38,11 +37,14 @@ class ActorCritic(nn.Module):
         x = nn.Dense(128)(x)
         x = nn.relu(x)
         mu = nn.Dense(features=ACTION_DIM)(x)
+        # Clipping delle azioni
         mu_lin = jnp.clip(mu[..., 0], 0.0, self.cfg.max_lin_vel) 
         mu_ang = jnp.clip(mu[..., 1], -self.cfg.max_ang_vel, self.cfg.max_ang_vel)
         mu = jnp.stack([mu_lin, mu_ang], axis=-1)
+        
         log_std = self.param('log_std', nn.initializers.zeros, (ACTION_DIM,))
         std = jnp.exp(log_std)
+        
         V = nn.Dense(features=1)(x)
         return mu, std, V.squeeze(-1)
 
@@ -79,17 +81,16 @@ def ppo_loss_fn(params, batch, cfg):
     mu, std, values = model.apply({'params': params}, batch['obs'])
     
     def log_prob_fn(action, mu, std):
-        # std qui è (2,), mu è (2,), action è (2,)
         return -0.5 * jnp.sum(((action - mu) / std)**2 + 2 * jnp.log(std) + jnp.log(2 * jnp.pi))
     
-    # --- CORREZIONE 1: in_axes=(0, 0, None) ---
-    # Mappa su 'action' (0) e 'mu' (0), ma tieni 'std' fisso (None)
+    # in_axes=(0, 0, None) perché std è un parametro fisso non batchato qui
     log_probs = jax.vmap(log_prob_fn, in_axes=(0, 0, None))(batch['actions'], mu, std)
     
     entropy = jnp.sum(0.5 * (jnp.log(2 * jnp.pi * std**2) + 1.0))
     
     ratio = jnp.exp(log_probs - batch['old_log_probs'])
     adv = batch['advantages']
+    # Normalizzazione vantaggi
     adv = (adv - jnp.mean(adv)) / (jnp.std(adv) + 1e-8)
     
     clip_eps = 0.2
@@ -103,6 +104,7 @@ def ppo_loss_fn(params, batch, cfg):
 
 # --- 4. TRAINING LOOP ---
 
+# JIT compila l'intero loop. NOTA: static_argnums deve corrispondere agli argomenti non-array
 @partial(jax.jit, static_argnums=(0, 1, 2, 3))
 def run_training_loop(
     cfg: StaticConfig,
@@ -110,17 +112,22 @@ def run_training_loop(
     num_updates: int,
     steps_per_rollout: int
 ):
+    # Inizializzazione RNG
     rng = jax.random.PRNGKey(int(time.time()))
     rng, init_rng, reset_rng = jax.random.split(rng, 3)
 
+    # Reset Ambiente
     reset_keys = jax.random.split(reset_rng, num_envs)
     _, env_state, obs, obstacles, rect_obst = jax.vmap(reset, in_axes=(0, None))(reset_keys, cfg)
 
+    # Init Rete
     network = ActorCritic(cfg=cfg)
     OBS_DIM = cfg.num_rays + 2
     init_obs_dummy = obs[0][:OBS_DIM]
     
     params = network.init(init_rng, init_obs_dummy)['params']
+    
+    # Init Optimizer
     optimizer = optax.adam(3e-4)
     opt_state = optimizer.init(params)
 
@@ -134,30 +141,23 @@ def run_training_loop(
         rng=rng
     )
 
-    # --- INIZIO BLOCCO DI VERIFICA GPU ---
-    try:
-        # Prende un elemento a caso dello stato (es. la prima osservazione)
-        first_obs_array = init_train_state.obs
-        device_platform = first_obs_array.device().platform
-        print("\n--- VERIFICA DISPOSITIVO JAX ---")
-        print(f"JAX ha allocato lo stato su: {device_platform.upper()}")
-        print(f"--------------------------------\n")
-    except Exception as e:
-        print(f"\nERRORE durante la verifica dispositivo: {e}")
-        print("Continuo con l'esecuzione. Se non vedi 'CUDA' qui, il training sarà su CPU.")
-    # --- FINE BLOCCO DI VERIFICA GPU --
+    # --- RIMOSSO BLOCCO DI VERIFICA GPU QUI ---
+    # (Non si può fare .device() dentro una funzione JIT)
 
     def update_step(train_state: TrainState, _):
         
+        # --- A. ROLLOUT (Raccolta Dati) ---
         def rollout_body(carry, _):
             ts, rng = carry
             rng, act_rng = jax.random.split(rng)
             
             current_obs = ts.obs[:, :OBS_DIM]
 
+            # Inferenza rete
             mu, std_vec, value = network.apply({'params': ts.params}, current_obs)
             std = jnp.exp(std_vec)
             
+            # Campionamento azione
             act_keys = jax.random.split(act_rng, num_envs)
             noise = jax.random.normal(act_rng, shape=mu.shape)
             action = mu + std * noise
@@ -165,11 +165,11 @@ def run_training_loop(
             def log_prob_fn(a, m, s):
                 return -0.5 * jnp.sum(((a - m) / s)**2 + 2 * jnp.log(s) + jnp.log(2 * jnp.pi))
             
-            # --- CORREZIONE 2: in_axes=(0, 0, None) ---
             old_log_prob = jax.vmap(log_prob_fn, in_axes=(0, 0, None))(action, mu, std)
 
             step_keys = jax.random.split(rng, num_envs)
             
+            # Step Environment
             next_state, next_obs, reward, done, next_obst, next_rect = jax.vmap(
                 auto_reset_step, 
                 in_axes=(0, 0, 0, None, 0, 0, 0)
@@ -193,6 +193,7 @@ def run_training_loop(
             
             return (new_ts, rng), transition
 
+        # Esegui Rollout
         (final_ts_rollout, rng_after_rollout), batch = jax.lax.scan(
             rollout_body, 
             (train_state, train_state.rng), 
@@ -200,6 +201,7 @@ def run_training_loop(
             length=steps_per_rollout
         )
 
+        # --- B. GAE (Generalized Advantage Estimation) ---
         last_obs = final_ts_rollout.obs[:, :OBS_DIM]
         _, _, last_val = network.apply({'params': train_state.params}, last_obs)
         
@@ -211,6 +213,7 @@ def run_training_loop(
             0.99, 0.95
         )
         
+        # Flattening dei batch per l'update PPO
         flat_batch = jax.tree_util.tree_map(
             lambda x: x.reshape((steps_per_rollout * num_envs,) + x.shape[2:]),
             batch
@@ -221,6 +224,7 @@ def run_training_loop(
         flat_batch['advantages'] = flat_adv
         flat_batch['targets'] = flat_tar
 
+        # --- C. UPDATE PPO (Epoche multiple) ---
         def train_epoch(carry, _):
             params, opt_st = carry
             grad_fn = jax.value_and_grad(ppo_loss_fn, has_aux=True)
@@ -233,7 +237,7 @@ def run_training_loop(
             train_epoch, 
             (train_state.params, train_state.opt_state),
             None,
-            length=4
+            length=10 # 4 Epoche PPO
         )
 
         new_train_state = final_ts_rollout._replace(
@@ -245,7 +249,7 @@ def run_training_loop(
         avg_metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x), metrics)
         return new_train_state, avg_metrics
 
-    print(f"Compilazione JIT in corso per {num_updates} aggiornamenti...")
+    # Loop principale di training (jax.lax.scan è molto più veloce di un for loop python)
     final_state, metrics_history = jax.lax.scan(
         update_step, 
         init_train_state, 
@@ -256,35 +260,26 @@ def run_training_loop(
     return final_state.params, metrics_history
 
 
-
-
 def eval_and_render(cfg: StaticConfig, params):
     print("\n>>> INIZIO VALUTAZIONE E RENDERING <<<")
     
-    # 1. Setup Matplotlib
-    plt.ion() # Modalità interattiva
+    plt.ion()
     fig, ax = plt.subplots(figsize=(8, 8))
     
-    # 2. Reset ambiente
     rng = jax.random.PRNGKey(int(time.time()))
     rng, reset_key = jax.random.split(rng)
     
-    # Resetta UN solo ambiente per la visualizzazione
     _, state, obs, obstacles, rect_obst = reset(reset_key, cfg)
     
-    # 3. Prepariamo la funzione per l'azione (JIT-tata)
     network = ActorCritic(cfg=cfg)
-    OBS_DIM = cfg.num_rays + 2 # Deve combaciare con il training!
+    OBS_DIM = cfg.num_rays + 2
 
     @jax.jit
     def get_deterministic_action(params, obs):
-        # Taglia l'osservazione per matchare l'input della rete
         obs_in = obs[:OBS_DIM] 
         mu, _, _ = network.apply({'params': params}, obs_in)
-        return mu # Usa la media (azione deterministica) senza rumore
+        return mu
 
-    # 4. Loop di visualizzazione
-    # Usiamo la step function normale (non auto_reset) perché vogliamo vedere la fine
     step_jit = jax.jit(step, static_argnums=(2,)) 
     
     max_steps = 500
@@ -292,26 +287,16 @@ def eval_and_render(cfg: StaticConfig, params):
     
     try:
         for t in range(max_steps):
-            # Calcola azione
             action = get_deterministic_action(params, obs)
-            
-            # Step ambiente
             state, obs, reward, done = step_jit(state, action, cfg, obstacles, rect_obst)
             total_reward += float(reward)
-            
-            # Render
-            # Passiamo 'ax' per disegnare sulla stessa finestra
             render(state, cfg, ax=ax, obstacles=obstacles, rect_obst=rect_obst)
-            
-            # Titolo con info
             ax.set_title(f"Step: {t} | Reward: {total_reward:.2f} | Done: {done}")
-            
-            # Pausa per vedere l'animazione (Python sleep)
             plt.pause(0.05) 
             
             if done:
                 print(f"Episodio terminato al passo {t}. Reward totale: {total_reward:.2f}")
-                time.sleep(1.0) # Pausa finale
+                time.sleep(1.0)
                 break
                 
     except KeyboardInterrupt:
@@ -322,6 +307,22 @@ def eval_and_render(cfg: StaticConfig, params):
 
 
 if __name__ == '__main__':
+    # --- VERIFICA GPU (SPOSTATA QUI) ---
+    print("\n--- VERIFICA SISTEMA JAX ---")
+    devices = jax.devices()
+    print(f"Dispositivi visibili: {devices}")
+    try:
+        # Verifica allocazione reale
+        dummy = jax.numpy.zeros(1)
+        print(f"Test allocazione memoria riuscito su: {dummy.device()}")
+        if "cpu" in str(dummy.device()).lower():
+            print("⚠️  ATTENZIONE: Stai usando la CPU! Il training sarà lento.")
+        else:
+            print("✅  OTTIMO: GPU rilevata e funzionante.")
+    except Exception as e:
+        print(f"Errore verifica: {e}")
+    print("----------------------------\n")
+
     # Configurazione 
     static_cfg = StaticConfig(
         dt=0.1, room_width=15.0, room_height=15.0, max_lin_vel=1.0, max_ang_vel=jnp.pi,
@@ -334,14 +335,19 @@ if __name__ == '__main__':
     print(">>> AVVIO TRAINING PURE JAX <<<")
     
     # Hyperparameters
+    # NOTA: 100M step sono tanti. Per un test riduciamo a 1M o 5M.
     NUM_ENVS = 512
-    STEPS_PER_ROLLOUT = 64
-    TOTAL_TIMESTEPS = 100_000_000 # Esempio ridotto per test veloce, aumentalo a 5M+ per risultati seri
-    NUM_UPDATES = TOTAL_TIMESTEPS // (NUM_ENVS * STEPS_PER_ROLLOUT)
+    STEPS_PER_ROLLOUT = 256
+    # TOTAL_TIMESTEPS = 100_000_000 
+    TOTAL_TIMESTEPS = 50_000_000 # Riduco per test, rimetti 100M quando sei sicuro
     
+    NUM_UPDATES = TOTAL_TIMESTEPS // (NUM_ENVS * STEPS_PER_ROLLOUT)
+    print(f"Totale Updates da compilare: {NUM_UPDATES}")
+
     t0 = time.time()
     
     # 1. Training
+    print("Inizio compilazione JIT e training (potrebbe volerci 1-2 minuti per partire)...")
     trained_params, metrics = run_training_loop(
         static_cfg, 
         num_envs=NUM_ENVS, 
@@ -349,14 +355,14 @@ if __name__ == '__main__':
         steps_per_rollout=STEPS_PER_ROLLOUT
     )
     
-    # 2. Sincronizzazione GPU (per timing corretto)
-    print("Attendo completamento calcoli GPU...")
+    # 2. Sincronizzazione GPU
+    print("Training finito. Attendo sincronizzazione GPU...")
     jax.tree_util.tree_map(lambda x: x.block_until_ready(), trained_params)
     
     t1 = time.time()
     total_time = t1 - t0
     print(f"Training REALE completato in {total_time:.2f}s")
-    print(f"FPS Reali: {TOTAL_TIMESTEPS / total_time:.2f}")
+    print(f"FPS Stimati: {TOTAL_TIMESTEPS / total_time:.2f}")
     
     # 3. Salvataggio
     with open("ppo_pure_jax_params.msgpack", "wb") as f:
