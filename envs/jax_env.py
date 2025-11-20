@@ -6,9 +6,9 @@ import jax.lax as lax
 import numpy as np  
 import matplotlib.pyplot as plt
 import time
-
-from typing import NamedTuple
-from bouncing import bounce_people_on_obstacles
+from typing import NamedTuple, Tuple
+from functools import partial
+from envs.bouncing import bounce_people_on_obstacles
 
 class StaticConfig(NamedTuple):
     dt: float
@@ -521,10 +521,21 @@ def reset(rng_key: jnp.ndarray,
         goal_pos = goal_pos,
     )
 
+    dxg = goal_pos[0] - state.x
+    dyg = goal_pos[1] - state.y
+    dist_to_goal = jnp.sqrt(dxg * dxg + dyg * dyg)
+
+    goal_global_angle = jnp.arctan2(dyg, dxg)
+    angle_to_goal = goal_global_angle - state.theta
+    angle_to_goal = jnp.arctan2(jnp.sin(angle_to_goal), jnp.cos(angle_to_goal))
+
     lidar = lidar_scan(state, cfg, obstacles, rect_obst)
 
     obs = jnp.concatenate([
-        jnp.array([state.x, state.y, state.theta], dtype=jnp.float32), lidar], axis=0)
+            jnp.array([dist_to_goal, angle_to_goal], dtype=jnp.float32), 
+            lidar
+            ], 
+        axis=0)
         
     return rng_key, state, obs, obstacles, rect_obst
 
@@ -861,14 +872,15 @@ def step(state: EnvState,
 
 
     # ---- Robust bouncing vs obstacles and walls ----
-    people_pos_new, people_vel_new = bounce_people_on_obstacles(
-        people_pos_prop,
-        state.people_vel,
-        obstacles,
-        rect_obst,
-        cfg,
-        restitution=0.1,      # puoi giocare con questo
-        max_iterations=3       # di solito bastano 2–3
+    people_pos_new, people_vel_new = _bounce_people_on_obstacles(
+        people_pos_prop,       # Posizioni proposte
+        state.people_vel,      # Velocità attuali
+        obstacles,             # Ostacoli circolari
+        rect_obst,             # Ostacoli rettangolari
+        cfg.people_radius,     # <--- Passa il valore float, non tutto 'cfg'
+        cfg.room_width,        # <--- Passa width esplicito
+        cfg.room_height,       # <--- Passa height esplicito
+        max_iterations=3       # (Opzionale, default è 10 ma 3 basta per performance)
     )
     
 
@@ -964,19 +976,52 @@ def step(state: EnvState,
 
     return new_state, obs, reward, done 
 
-def make_step_fn(cfg: StaticConfig,
-                 obstacles: Obstacles,
-                 rect_obst: RectObstacles):
+@partial(jax.jit, static_argnums=(3,))
+def auto_reset_step(
+    state: EnvState,
+    obs: jnp.ndarray,
+    action: jnp.ndarray,
+    cfg: StaticConfig,
+    obstacles: Obstacles,
+    rect_obst: RectObstacles,
+    rng_key: jnp.ndarray
+) -> Tuple[EnvState, jnp.ndarray, jnp.float32, jnp.bool_, Obstacles, RectObstacles]:
     """
-    Ritorna una versione jittata di `step` dove cfg/obstacles/rect_obst
-    sono “congelati” (statici) e si passa solo (state, action).
+    Esegue uno step e, se done=True, resetta l'ambiente (inclusi nuovi ostacoli).
+    Tutto in JAX puro, senza ricompilazione.
     """
+    
+    # 1. Esegui lo step normale
+    # Nota: dobbiamo importare 'step' o averlo definito sopra
+    next_state, next_obs, reward, done = step(state, action, cfg, obstacles, rect_obst)
 
-    def _step(state: EnvState, action: jnp.ndarray):
-        return step(state, action, cfg, obstacles, rect_obst)
+    # 2. Prepara il potenziale reset (calcolato SEMPRE per via di JAX)
+    rng_key, reset_key = jax.random.split(rng_key)
+    
+    # Genera un ambiente completamente nuovo (nuovi ostacoli, nuova mappa)
+    _, reset_state, reset_obs, reset_obst, reset_rect = reset(reset_key, cfg)
 
-    # JIT solo su (state, action): cfg/obstacles/rect_obst sono chiusi nel closure
-    return jax.jit(_step)
+    # 3. Seleziona tra continuazione o reset usando done come switch
+    # Usa tree_map per gestire le strutture dati annidate (EnvState, Obstacles)
+    
+    def where_struct(s1, s2):
+        # Se done è True, prendi s2 (reset), altrimenti s1 (next)
+        return jax.tree_util.tree_map(
+            lambda x, y: jnp.where(done, y, x), 
+            s1, s2
+        )
+
+    final_state = where_struct(next_state, reset_state)
+    final_obs = jnp.where(done, reset_obs, next_obs) # Obs è un array semplice
+    
+    # Anche gli ostacoli cambiano se l'episodio finisce!
+    final_obstacles = where_struct(obstacles, reset_obst)
+    final_rect_obstacles = where_struct(rect_obst, reset_rect)
+
+    # Nota: il reward e done ritornati sono quelli dello step appena concluso.
+    # Il reset influenza lo stato per il passo *successivo*.
+    
+    return final_state, final_obs, reward, done, final_obstacles, final_rect_obstacles
 
 
 def _ray_distace_to_walls(x0: jnp.ndarray,
