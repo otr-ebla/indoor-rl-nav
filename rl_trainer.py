@@ -126,6 +126,19 @@ def run_training_loop(
         rng=rng
     )
 
+    # --- INIZIO BLOCCO DI VERIFICA GPU ---
+    try:
+        # Prende un elemento a caso dello stato (es. la prima osservazione)
+        first_obs_array = init_train_state.obs
+        device_platform = first_obs_array.device().platform
+        print("\n--- VERIFICA DISPOSITIVO JAX ---")
+        print(f"JAX ha allocato lo stato su: {device_platform.upper()}")
+        print(f"--------------------------------\n")
+    except Exception as e:
+        print(f"\nERRORE durante la verifica dispositivo: {e}")
+        print("Continuo con l'esecuzione. Se non vedi 'CUDA' qui, il training sarà su CPU.")
+    # --- FINE BLOCCO DI VERIFICA GPU --
+
     def update_step(train_state: TrainState, _):
         
         def rollout_body(carry, _):
@@ -313,9 +326,9 @@ if __name__ == '__main__':
     print(">>> AVVIO TRAINING PURE JAX <<<")
     
     # Hyperparameters
-    NUM_ENVS = 64
+    NUM_ENVS = 4096
     STEPS_PER_ROLLOUT = 128
-    TOTAL_TIMESTEPS = 10_000_000 # Esempio ridotto per test veloce, aumentalo a 5M+ per risultati seri
+    TOTAL_TIMESTEPS = 100_000_000 # Esempio ridotto per test veloce, aumentalo a 5M+ per risultati seri
     NUM_UPDATES = TOTAL_TIMESTEPS // (NUM_ENVS * STEPS_PER_ROLLOUT)
     
     t0 = time.time()

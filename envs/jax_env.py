@@ -62,8 +62,7 @@ class EnvState(NamedTuple):
     people_vel: jnp.ndarray
     goal_pos: jnp.ndarray  # (2,)
 
-
-@jax.jit(static_argnums=1)
+@partial(jax.jit, static_argnums=(1,))
 def sample_free_position_jittable(
     rng_key, 
     cfg, 
@@ -168,7 +167,7 @@ def sample_free_position_jittable(
     
     return final_key, final_x, final_y
 
-@jax.jit(static_argnums=1)
+@partial(jax.jit, static_argnums=(1,))
 def sample_random_obstacles_jittable(
     rng_key: jnp.ndarray,
     cfg: StaticConfig,
@@ -300,7 +299,7 @@ def sample_random_obstacles_jittable(
     
     return final_key, obstacles
 
-@jax.jit(static_argnums=1)
+@partial(jax.jit, static_argnums=(1,))
 def sample_random_rectangles_jittable(
     rng_key: jnp.ndarray,
     cfg: StaticConfig,
@@ -398,7 +397,7 @@ def sample_random_rectangles_jittable(
 # Nota: Devi assicurarti che le tue funzioni jittable abbiano un parametro
 #       max_tries per la gestione di while_loop in JAX.
 
-@jax.jit(static_argnums=1)
+@partial(jax.jit, static_argnums=(1,))
 def reset(rng_key: jnp.ndarray,
                    cfg: StaticConfig,
                    ) -> tuple[jnp.ndarray, EnvState, jnp.ndarray, Obstacles, RectObstacles]:
@@ -1477,98 +1476,55 @@ def fast_rollout(num_steps: int = 10000):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
+# ... (fine delle definizioni delle funzioni) ...
 
 if __name__ == "__main__":
+    # Configurazione
     static_cfg = StaticConfig(
-        dt=0.1, # Rallentiamo il dt per un'animazione più fluida
-        room_width=15.0,
-        room_height=15.0,
-        max_lin_vel=1.0,
-        max_ang_vel=jnp.pi,
-        robot_radius=0.2,
-        num_rays=108,
-        max_lidar_distance=20.0,
-        num_people=30, # Riduciamo per la visualizzazione
-        people_radius=0.2,
-
-        min_circ_obstacles=2,
-        max_circ_obstacles=5,
-        obst_min_radius=0.3,
-        obst_max_radius=1.5,
-        obst_clearance=0.2,
-
-        min_rect_obstacles=2,
-        max_rect_obstacles=6,
-        rect_min_width=1.0,
-        rect_max_width=3.0,
-        rect_min_height=1.0,
-        rect_max_height=3.0,
-
-        goal_radius=0.3,
-        goal_min_robot_dist=3.0,
-        goal_reward=10.0,
+        dt=0.1, 
+        room_width=15.0, room_height=15.0, max_lin_vel=1.0, max_ang_vel=jnp.pi,
+        robot_radius=0.2, num_rays=108, max_lidar_distance=20.0, num_people=10, people_radius=0.2,
+        min_circ_obstacles=2, max_circ_obstacles=5, obst_min_radius=0.3, obst_max_radius=1.5, obst_clearance=0.2,
+        min_rect_obstacles=2, max_rect_obstacles=6, rect_min_width=1.0, rect_max_width=3.0, rect_min_height=1.0, rect_max_height=3.0,
+        goal_radius=0.3, goal_min_robot_dist=3.0, goal_reward=10.0,
     )
 
     rng_key = jrandom.PRNGKey(int(time.time()))
     action = jnp.array([0.5, 0.3], dtype=jnp.float32)
 
-    num_episodes = 20
-    max_steps_per_episode = 300 
+    num_episodes = 5
+    max_steps_per_episode = 200 
 
-    # 1) Creazione della figura e assi
-    fig, ax = plt.subplots(figsize=(5, 5))
+    # Prepariamo la funzione step JIT-tata UNA VOLTA SOLA
+    # static_argnums=(2,) corrisponde a 'cfg' che è il terzo argomento (indice 2)
+    # step(state, action, cfg, obstacles, rect_obst)
+    jit_step = jax.jit(step, static_argnums=(2,))
 
-    # 2) Loop principale per il rendering
+    fig, ax = plt.subplots(figsize=(6, 6))
+
     for ep in range(num_episodes):
         print(f"=== Episodio {ep} ===")
-
-        # A) Reset dell'ambiente (chiamando la tua funzione ottimizzata)
-        rng_key, state, obs, obstacles, rect_obst = reset(
-            rng_key, 
-            static_cfg,
-        )
         
-        # B) Crea la funzione step JIT-compilata
-        step_fn = make_step_fn(static_cfg, obstacles, rect_obst)
-
+        # Reset
+        rng_key, reset_key = jrandom.split(rng_key)
+        _, state, obs, obstacles, rect_obst = reset(reset_key, static_cfg)
+        
+        done = False
         for t in range(max_steps_per_episode):
             t0 = time.time()
 
-            # Step dell'ambiente (JIT-compiled)
-            state, obs, reward, done = step_fn(state, action)
+            # Step (usiamo la versione jittata direttamente)
+            # Nota: non usiamo auto_reset_step qui perché vogliamo vedere l'episodio finire
+            state, obs, reward, done = jit_step(state, action, static_cfg, obstacles, rect_obst)
 
-            # C) Rendering dello stato corrente
-            render(
-                state, 
-                static_cfg, 
-                ax=ax, 
-                obstacles=obstacles,
-                rect_obst=rect_obst,
-            )
-                
-            # D) Pausa per la visualizzazione
-            elapsed = time.time() - t0
-            if elapsed < static_cfg.dt:
-                time.sleep(static_cfg.dt - elapsed)
+            # Render
+            render(state, static_cfg, ax=ax, obstacles=obstacles, rect_obst=rect_obst)
+            
+            # Pausa per visualizzazione
+            plt.pause(0.01) 
 
             if done:
-                print(f"Episodio {ep} terminato a step {int(state.step)}")
+                print(f"Episodio terminato a step {state.step}")
                 break
-
-    print("Simulazione di rendering terminata.")
-    # Mantieni aperta la finestra Matplotlib alla fine
-    plt.show() 
-
-    
+                
+    plt.show()
