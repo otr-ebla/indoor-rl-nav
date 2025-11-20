@@ -1,3 +1,10 @@
+import os
+
+# === FORZA JAX A CUDA PRIMA DI IMPORTARE JAX ===
+os.environ["JAX_PLATFORMS"] = "cuda"
+os.environ["JAX_PLATFORM_NAME"] = "cuda"
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/home/LABAUT/alberto_vaglio/cuda12-local"
+
 import jax
 import jax.numpy as jnp
 from jax import lax

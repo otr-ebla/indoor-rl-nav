@@ -1,3 +1,11 @@
+import os
+
+os.environ["JAX_PLATFORMS"] = "cuda"
+os.environ["JAX_PLATFORM_NAME"] = "cuda"
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/home/LABAUT/alberto_vaglio/cuda12-local"
+
+
+# === SOLO ORA POSSIAMO IMPORTARE JAX ===
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -6,7 +14,7 @@ import time
 import optax
 from functools import partial
 from flax.serialization import to_bytes, from_bytes
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 from typing import NamedTuple, Tuple
 
 # Assicurati che l'import sia corretto per la tua struttura cartelle
@@ -326,8 +334,8 @@ if __name__ == '__main__':
     print(">>> AVVIO TRAINING PURE JAX <<<")
     
     # Hyperparameters
-    NUM_ENVS = 4096
-    STEPS_PER_ROLLOUT = 128
+    NUM_ENVS = 512
+    STEPS_PER_ROLLOUT = 64
     TOTAL_TIMESTEPS = 100_000_000 # Esempio ridotto per test veloce, aumentalo a 5M+ per risultati seri
     NUM_UPDATES = TOTAL_TIMESTEPS // (NUM_ENVS * STEPS_PER_ROLLOUT)
     

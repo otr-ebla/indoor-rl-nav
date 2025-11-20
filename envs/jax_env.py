@@ -1,3 +1,14 @@
+import os
+
+os.environ["JAX_PLATFORMS"] = "cuda"
+os.environ["JAX_PLATFORM_NAME"] = "cuda"
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/home/LABAUT/alberto_vaglio/cuda12-local"
+os.environ["LD_LIBRARY_PATH"] = (
+    "/home/LABAUT/alberto_vaglio/cuda12-local/lib64:"
+    "/home/LABAUT/alberto_vaglio/cuda-libs/lib64:"
+    + os.environ.get("LD_LIBRARY_PATH", "")
+)
+
 from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
