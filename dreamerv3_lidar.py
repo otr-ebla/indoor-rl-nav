@@ -1,10 +1,75 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from flax import struct
 import distrax 
 import jax.lax as lax
 from flax.training import train_state
 import optax
+
+RSSM_STOCHASTIC_SIZE = 32
+RSSM_DISCRETE_CLASSES = 8
+
+@struct.dataclass
+class ReplayBuffer:
+    obs: jnp.ndarray          # [capacity, obs_dim]
+    goal: jnp.ndarray         # [capacity, goal_dim]
+    act: jnp.ndarray          # [capacity, action_dim]
+    rew: jnp.ndarray          # [capacity]
+    done: jnp.ndarray         # [capacity]
+    capacity: int
+    ptr: int
+    full: bool 
+
+def create_buffer(capacity, obs_dim, goal_dim, act_dim):
+    return ReplayBuffer(
+        obs=jnp.zeros((capacity, obs_dim)),
+        goal=jnp.zeros((capacity, goal_dim)),
+        act=jnp.zeros((capacity, act_dim)),
+        rew=jnp.zeros((capacity,)),
+        done=jnp.zeros((capacity,)),
+        capacity=capacity,
+        ptr=0,
+        full=False,
+    )
+
+def rb_add(buffer: ReplayBuffer, obs, goal, act, rew, done):
+    idx = buffer.ptr
+
+    new_buffer = buffer.replace(
+        obs=buffer.obs.at[idx].set(obs),
+        goal=buffer.goal.at[idx].set(goal),
+        act=buffer.act.at[idx].set(act),
+        rew=buffer.rew.at[idx].set(rew),
+        done=buffer.done.at[idx].set(done),
+        ptr=(idx + 1) % buffer.capacity,
+        full=buffer.full | (idx + 1 >= buffer.capacity),
+    )
+    return new_buffer
+
+def rb_sample(buffer: ReplayBuffer, batch_size, seq_len, key):
+    # dove possiamo iniziare?
+    max_start = buffer.capacity - seq_len if buffer.full else buffer.ptr - seq_len
+    max_start = jnp.maximum(max_start, 1)
+
+    # campiona gli indici
+    key, subkey = jax.random.split(key)
+    starts = jax.random.randint(subkey, (batch_size,), 0, max_start)
+
+    # Costruisci gli indici temporali
+    idx = starts[:, None] + jnp.arange(seq_len)[None, :]   # [batch, seq_len]
+
+    batch = {
+        "lidar": buffer.obs[idx],
+        "goal": buffer.goal[idx],
+        "actions": buffer.act[idx],
+        "rewards": buffer.rew[idx],
+        "done": buffer.done[idx],
+    }
+    return batch, key
+
+
+
 
 # --- 1. ENCODER CON LAYERNORM ---
 class SensorEncoder(nn.Module):
@@ -26,7 +91,7 @@ class SensorEncoder(nn.Module):
 class RSSM(nn.Module):
     deterministic_size: int = 512
     stochastic_size: int = 32 
-    discrete_classes: int = 32
+    discrete_classes: int = RSSM_DISCRETE_CLASSES
 
     def setup(self):
         self.fc_input = nn.Dense(512)
@@ -117,7 +182,7 @@ class Actor(nn.Module):
     @nn.compact
     def __call__(self, state_features):
         x = nn.Dense(256)(state_features)
-        x = nn.LayerNorm()(x) # Importante per evitare azioni giganti!
+        x = nn.LayerNorm()(x)
         x = nn.elu(x)
         x = nn.Dense(256)(x)
         x = nn.LayerNorm()(x)
@@ -125,9 +190,15 @@ class Actor(nn.Module):
 
         out = nn.Dense(self.action_dim * 2)(x)
         mean, std_raw = jnp.split(out, 2, axis=-1)
-        std = nn.softplus(std_raw) + 0.1 
-        dist = distrax.MultivariateNormalDiag(mean, std)
-        return dist
+
+        log_std = jnp.clip(std_raw, -5.0, 2.0)
+        std = jnp.exp(log_std)
+
+        base_dist = distrax.MultivariateNormalDiag(mean, std)
+        tanh_dist = distrax.Transformed(distribution=base_dist,
+                                        bijector=distrax.Tanh())
+        return tanh_dist
+
 
 class Critic(nn.Module):
     @nn.compact
@@ -163,7 +234,7 @@ class Dreamer(nn.Module):
             return (h_next, post_probs), (h_next, post_logits, prior_logits)
         
         init_h = jnp.zeros((batch_size, self.rssm.deterministic_size))
-        init_z = jnp.zeros((batch_size, self.rssm.stochastic_size, self.rssm.discrete_classes))
+        init_z = jnp.zeros((batch_size, RSSM_STOCHASTIC_SIZE, RSSM_DISCRETE_CLASSES))
         _ = self.rssm((init_h, init_z), actions_T[0], embed_T[0])
         
         _, (h_seq_T, post_logits_seq_T, prior_logits_seq_T) = lax.scan(
@@ -175,33 +246,60 @@ class Dreamer(nn.Module):
         prior_logits_seq = jnp.swapaxes(prior_logits_seq_T, 0, 1)
         
         z_seq = nn.softmax(post_logits_seq)
-        features = jnp.concatenate([h_seq, z_seq.reshape(batch_size, -1, self.rssm.stochastic_size*32)], axis=-1)
+        features = jnp.concatenate([h_seq, z_seq.reshape(batch_size, -1, self.rssm.stochastic_size*RSSM_DISCRETE_CLASSES)], axis=-1)
         pred_obs, pred_rew, pred_cont = self.heads(features)
 
         _ = self.actor(features)
         _ = self.critic(features)
         
-        return pred_obs, pred_rew, pred_cont, post_logits_seq, prior_logits_seq, features
+        return (pred_obs, pred_rew, pred_cont, post_logits_seq, prior_logits_seq, features, h_seq, z_seq)
     
-    def imagination(self, start_h, start_z, horizon=15):
-        def dream_step(prev_state, _):
-            h, z = prev_state
-            features = jnp.concatenate([h, z.reshape(h.shape[0], -1)], axis=-1)
-            dist = self.actor(features)
-            action = dist.sample(seed=jax.random.PRNGKey(0)) 
-            next_state, _ = self.rssm.img_step(prev_state, action)
-            
-            h_next, z_next = next_state
-            feat_next = jnp.concatenate([h_next, z_next.reshape(h_next.shape[0], -1)], axis=-1)
-            
-            reward = self.heads(feat_next)[1] 
-            value = self.critic(feat_next)
-            
-            return next_state, (reward, value, action, features)
+    def imagination(self, start_h, start_z, key, horizon=15):
+        # carry = ( (h, z), key )
+        def dream_step(carry, _):
+            (h, z), key = carry
 
-        _, (dream_rews, dream_vals, dream_acts, dream_feats) = lax.scan(
-            dream_step, (start_h, start_z), None, length=horizon
+            # 1) Split della key: da una key grande ne facciamo una nuova + una da usare ora
+            key, subkey = jax.random.split(key)
+
+            # 2) Costruiamo le feature dello stato
+            features = jnp.concatenate([h, z.reshape(h.shape[0], -1)], axis=-1)
+
+            # 3) Policy: distribuzione sulle azioni
+            dist = self.actor(features)
+
+            # 4) Campioniamo l'azione usando la subkey (diversa a ogni passo)
+            action = dist.sample(seed=subkey)
+
+            # 5) Passo del modello di mondo in immaginazione
+            next_state, _ = self.rssm.img_step((h, z), action)
+            h_next, z_next = next_state
+
+            # 6) Ricostruiamo le feature per reward e value
+            feat_next = jnp.concatenate([h_next, z_next.reshape(h_next.shape[0], -1)], axis=-1)
+            feat_next = jax.lax.stop_gradient(feat_next)  # Stop gradient qui!
+
+            reward = self.heads(feat_next)[1]  # reward_pred
+            value = self.critic(feat_next)
+
+            # 7) Nuovo carry: stato + key aggiornata
+            new_carry = ((h_next, z_next), key)
+
+            # 8) Output della scan (sequenze)
+            outputs = (reward, value, action, feat_next)
+            return new_carry, outputs
+
+        # Inizializziamo la scan con ((start_h, start_z), key)
+        init_carry = ((start_h, start_z), key)
+
+        # Secondo argomento (inputs) è None, quindi usiamo una sequenza "vuota" di lunghezza horizon
+        (_, _), (dream_rews, dream_vals, dream_acts, dream_feats) = lax.scan(
+            dream_step,
+            init_carry,
+            xs=None,
+            length=horizon,
         )
+
         return dream_rews, dream_vals, dream_acts, dream_feats
 
     def policy_step(self, prev_state, lidar, goal, prev_action):
@@ -215,21 +313,22 @@ class Dreamer(nn.Module):
         return action, next_state
 
 # --- LOSS HELPERS (Con KL Safe + Free Bits) ---
-def compute_kl_loss(post_logits, prior_logits):
+def compute_kl_loss(post_logits, prior_logits, free_bits=0.1):
     post_probs = nn.softmax(post_logits)
     prior_probs = nn.softmax(prior_logits)
-    
-    # Clip per evitare log(0) = nan
+
     post_probs = jnp.clip(post_probs, 1e-7, 1.0)
     prior_probs = jnp.clip(prior_probs, 1e-7, 1.0)
 
-    diff_log = jnp.log(post_probs) - jnp.log(prior_probs)
-    kl = jnp.sum(post_probs * diff_log, axis=-1) 
-    
-    # Free Bits: Minimo 1.0 di KL per non schiacciare troppo la dinamica
-    kl = jnp.maximum(kl, 1.0) 
+    # KL per dimensione
+    kl_per_dim = post_probs * (jnp.log(post_probs) - jnp.log(prior_probs))
+    kl_per_dim = jnp.sum(kl_per_dim, axis=-1)
+
+    # Free bits più morbido
+    kl = jnp.maximum(kl_per_dim, free_bits)
 
     return jnp.mean(kl)
+
 
 def calculate_lambda_returns(rewards, values, discount=0.99, lambda_=0.95):
     next_values = jnp.concatenate([values[1:], values[-1:]], axis=0)
@@ -244,73 +343,125 @@ def calculate_lambda_returns(rewards, values, discount=0.99, lambda_=0.95):
     _, lambda_returns = lax.scan(step_fn, last_val, inputs, reverse=True)
     return lambda_returns
 
-# --- TRAIN FUNCTIONS (Con Reward Scaling) ---
+
 @jax.jit
 def train_world_model(state, batch):
+    """
+    Aggiorna solo il world model (encoder + RSSM + heads).
+    Ritorna:
+      - new_state: parametri aggiornati
+      - logs: dizionario con le loss
+      - h_seq, z_seq: stati latenti da usare per il training actor-critic
+    """
     def loss_fn(params):
-        pred_obs, pred_rew, pred_cont, post_logits, prior_logits, features = state.apply_fn(
-            params, batch['lidar'], batch['goal'], batch['actions']
+        (pred_obs,
+         pred_rew,
+         pred_cont,
+         post_logits,
+         prior_logits,
+         features,
+         h_seq,
+         z_seq) = state.apply_fn(
+            params,
+            batch["lidar"],
+            batch["goal"],
+            batch["actions"],
         )
 
-        target_obs = jnp.concatenate([batch['lidar'], batch['goal']], axis=-1)
-        target_rew = batch['rewards']
+        # Target osservazioni e reward
+        target_obs = jnp.concatenate([batch["lidar"], batch["goal"]], axis=-1)
+        target_rew = batch["rewards"]
 
+        # Reconstruction loss su osservazioni
         loss_obs = jnp.mean((pred_obs - target_obs) ** 2)
-        
-        # Squeeze e SCALING del reward (diviso 10) per stabilità
+
+        # Reconstruction loss reward (scala reward di un fattore 0.1)
         loss_rew = jnp.mean((pred_rew.squeeze(-1) - target_rew * 0.1) ** 2)
 
+        # KL priors vs posteriors (con free bits)
         loss_kl = compute_kl_loss(post_logits, prior_logits)
-        
-        # Pesi tipici Dreamer
+
+        # Peso KL stile Dreamer (0.5 è un valore ragionevole)
         total_loss = loss_obs + loss_rew + 0.5 * loss_kl
 
         logs = {
-            'loss_total': total_loss,
-            'loss_obs': loss_obs,
-            'loss_rew': loss_rew,
-            'loss_kl': loss_kl
+            "loss_total": total_loss,
+            "loss_obs": loss_obs,
+            "loss_rew": loss_rew,
+            "loss_kl": loss_kl,
         }
-        return total_loss, (logs, features)
-    
+
+        # Non facciamo stop_gradient qui: serve il gradiente per il world model
+        return total_loss, (logs, h_seq, z_seq)
+
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, (logs, features)), grads = grad_fn(state.params)
+
+    (loss, (logs, h_seq, z_seq)), grads = grad_fn(state.params)
+
+    # 🔥 Gradient clipping globale
+    grads = optax.clip_by_global_norm(grads, 10.0)
+
     new_state = state.apply_gradients(grads=grads)
-    return new_state, logs, features
+    return new_state, logs, h_seq, z_seq
+
 
 @jax.jit
-def train_actor_critic(state, features):
-    h_dim = 512
-    batch_time = features.shape[0] * features.shape[1]
-    flat_features = features.reshape(batch_time, -1)
-    
-    start_h = flat_features[:, :h_dim]
-    start_z_flat = flat_features[:, h_dim:]
-    start_z = start_z_flat.reshape(batch_time, 32, 32)
-    
+def train_actor_critic(state, h_seq, z_seq):
+    """
+    Allena actor e critic usando gli stati latenti del world model
+    (h_seq, z_seq) ma SENZA modificare il world model stesso.
+    """
+
+    # h_seq: [batch, time, deterministic_size]
+    # z_seq: [batch, time, RSSM_STOCHASTIC_SIZE, RSSM_DISCRETE_CLASSES]
+
+    batch, time, _ = h_seq.shape
+    batch_time = batch * time
+
+    # Ricostruiamo gli stati iniziali per l'imagination:
+    start_h = h_seq.reshape(batch_time, -1)
+    start_z = z_seq.reshape(batch_time, RSSM_STOCHASTIC_SIZE, RSSM_DISCRETE_CLASSES)
+
+    # Stop gradient: non vogliamo che actor/critic cambino il world model
     start_h = jax.lax.stop_gradient(start_h)
     start_z = jax.lax.stop_gradient(start_z)
 
     def loss_fn(params):
+        key = jax.random.PRNGKey(0)  # in futuro: passarlo dall'esterno
+
         dream_rews, dream_vals, dream_acts, dream_feats = state.apply_fn(
-            params, start_h, start_z, method=Dreamer.imagination
+            params,
+            start_h,
+            start_z,
+            key,
+            method=Dreamer.imagination,
         )
-        
-        # Scaling del reward sognato per coerenza con WM
+
+        # Lambda-returns sui reward immaginati (già scalati di 0.1)
         targets = calculate_lambda_returns(dream_rews * 0.1, dream_vals)
         targets = jax.lax.stop_gradient(targets)
-        
+
+        # Critic: MSE tra valore predetto e target
         loss_critic = jnp.mean((dream_vals - targets) ** 2)
+
+        # Actor: massimizzare il target → minimizzare -target
         loss_actor = -jnp.mean(targets)
-        
-        # Piccola penalità entropica per incoraggiare l'esplorazione
-        # (Opzionale, ma aiuta a non collassare su un'azione)
-        # loss_actor += -1e-4 * entropy... (omessa per semplicità)
-        
+
         total_loss = loss_actor + loss_critic
-        return total_loss, {'loss_actor': loss_actor, 'loss_critic': loss_critic}
+
+        logs = {
+            "loss_actor": loss_actor,
+            "loss_critic": loss_critic,
+            "loss_total_ac": total_loss,
+        }
+        return total_loss, logs
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (loss, logs), grads = grad_fn(state.params)
+
+    # 🔥 Gradient clipping globale
+    grads = optax.clip_by_global_norm(grads, 10.0)
+
     new_state = state.apply_gradients(grads=grads)
     return new_state, logs
+
