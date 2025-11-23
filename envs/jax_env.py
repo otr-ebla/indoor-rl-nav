@@ -553,7 +553,6 @@ def reset(rng_key: jnp.ndarray,
     return rng_key, state, obs, obstacles, rect_obst
 
 
-
 def _min_gap_to_circles(
         px: jnp.ndarray,
         py: jnp.ndarray,
