@@ -1,6 +1,6 @@
 # Indoor RL Nav: 2D Simulation Enviroment Mobile Robot LiDAR Navigation 
 
-![Indoor Environment](./indoor_gif.gif)
+![Indoor Environment](./assets/indoor_gif.gif)
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
 ![JAX](https://img.shields.io/badge/JAX-Accelerated-blueviolet)
