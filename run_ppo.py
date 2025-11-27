@@ -9,7 +9,7 @@ from envs.gym_nav_env import GymNavEnv
 from train_ppo import NUM_RAYS   
 
 def main():
-    env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=50)
+    env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=20)
 
     model = PPO.load("ppo_gym_nav_env2", env=env)
 

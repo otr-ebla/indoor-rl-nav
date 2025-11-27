@@ -211,7 +211,7 @@ class Simple2DEnv:
                 px = random.uniform(margin, self.room_width - margin)
                 py = random.uniform(margin, self.room_height - margin)
 
-            # random direction
+            # random direction and speed
             angle = random.uniform(0, 2 * math.pi)
             vx = self.people_speed * math.cos(angle) * random.uniform(0.5, 1.0)
             vy = self.people_speed * math.sin(angle) * random.uniform(0.5, 1.0)
