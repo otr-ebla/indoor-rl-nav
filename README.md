@@ -1,42 +1,47 @@
-# Indoor RL Nav: 2D Simulation Enviroment Mobile Robot LiDAR Navigation 
-
-![Indoor Environment](./assets/indoor_gif.gif)
-
-![Python](https://img.shields.io/badge/Python-3.11+-blue)
-![JAX](https://img.shields.io/badge/JAX-Accelerated-blueviolet)
-![Status](https://img.shields.io/badge/Status-Active-success)
+# Indoor RL Nav: 2D Simulation Environment for Mobile Robot LiDAR Navigation
 
 ## Overview
 
-**Indoor RL Nav** is a high-performance 2D training environment and simulation framework designed for mobile robots equipped with 2D LiDAR sensors. 
+**Indoor RL Nav** is a lightweight, high-performance 2D simulation environment designed specifically for training Deep Reinforcement Learning (DRL) agents to navigate mobile robots.
 
-The primary goal of this repository is to train Reinforcement Learning agents to navigate complex indoor scenarios. Unlike standard static mazes, this environment challenges the agent to handle **dynamic environments** containing both static geometry (walls) and moving obstacles (simulating pedestrians).
+The core focus of this repository is to solve the navigation in dynamic environments problem using sparse sensor data. Agents are equipped with simulated 2D LiDAR sensors (ray-casts) and must learn to reach target coordinates while avoiding both static geometry (walls) and moving dynamic obstacles (simulated pedestrians).
 
-The framework leverages **JAX** to accelerate environment stepping and training, supporting state-of-the-art algorithms including **PPO** and **DreamerV3**.
+Built on the standard **Gymnasium** interface, this environment allows for rapid prototyping and training of algorithms like **PPO (Proximal Policy Optimization)** and **SAC (Soft Actor-Critic)** to develop robust obstacle avoidance policies.
 
 ## Key Features
 
-* **2D LiDAR Perception:** Agents operate using sparse 2D ray-cast data, simulating real-world laser scanners found on platforms like Turtlebots.
-* **Dynamic Obstacle Avoidance:** The environment includes logic for moving entities, forcing the agent to learn predictive navigation and collision avoidance.
-* **JAX Acceleration:** Custom environment wrappers allow for massive parallelization on GPU/TPU, significantly reducing training times compared to standard CPU-bound Gym environments.
-* **Algorithm Support:** Includes implementations for:
-    * Proximal Policy Optimization (PPO)
-    * DreamerV3 (Model-Based RL)
+- **2D LiDAR Perception**  
+  Agents perceive the world solely through sparse 2D ray-cast data (e.g., 108 rays), mimicking the limitations of real-world laser scanners found on platforms like Turtlebots.
+
+- **Dynamic Obstacle Avoidance**  
+  Unlike static mazes, this environment populates the world with moving entities, forcing the agent to learn predictive navigation rather than simple map memorization.
+
+- **Deep RL Ready**  
+  Fully compatible with **stable-baselines3**, allowing immediate integration with standard implementations of **PPO**, **SAC**, and **TQC**.
+
+- **Fast Simulation**  
+  Optimized for high-throughput training steps on standard CPUs, enabling efficient training of navigation policies without requiring heavy 3D rendering engines.
 
 ## Repository Structure
 
 ```text
 .
-├── dreamerv3_lidar.py    # DreamerV3 implementation adapted for LiDAR
-├── train_ppo.py          # Main training loop for PPO
-├── run_ppo.py            # Inference script to test trained PPO agents
-├── rl_trainer.py         # Base trainer utilities
-├── visualMain.py         # Real-time visualization tool
-├── main.py               # General entry point
-├── envs/                 # Environment definitions
-│   ├── gym_nav_env.py    # Core gymnasium environment
-│   ├── jax_env.py        # JAX-optimized wrapper
-│   ├── simple_env.py     # Simplified debugging environment
-│   └── bouncing.py       # Logic for dynamic obstacles
-├── *.msgpack             # Pre-trained model weights
-└── requirements.txt      # Project dependencies
+├── assets/              # Visuals (gifs, images)
+├── checkpoints/         # Trained model weights (.zip, .msgpack)
+├── logs/                # Tensorboard logs and training metrics
+├── scripts/             # Executable scripts
+│   ├── train_ppo.py     # Main training loop for PPO/SAC agents
+│   ├── run_ppo.py       # Inference script to test/visualize trained agents
+│   └── visualMain.py    # Real-time visualization tool
+├── src/                 # Core library code
+│   ├── agents/          # Agent implementations and trainers
+│   └── envs/            # Gymnasium environment definitions
+│       ├── gym_nav_env.py    # Core simulation logic
+│       └── bouncing.py       # Dynamics for moving obstacles
+└── requirements.txt     # Project dependencies
+
+
+## Getting Started
+```
+pip install -r requirements.txt
+```
