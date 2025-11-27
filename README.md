@@ -1,6 +1,6 @@
 # Indoor RL Nav: 2D Simulation Environment for Mobile Robot LiDAR Navigation
 
-<img src="assets/indoor_gif.gif" alt="Environment Demo" width="90%"/>
+<img src="assets/indoor_gif.gif" alt="Environment Demo" width="70%"/>
 
 ## Overview
 
