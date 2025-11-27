@@ -35,7 +35,7 @@ env_cfg = StaticConfig(
     goal_reward=10.0
 )
 
-BATCH_SIZE = 4
+BATCH_SIZE = 512
 SEQ_LEN = 50
 
 # Vettorizziamo l'ambiente (4 robot insieme)

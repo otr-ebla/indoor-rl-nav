@@ -18,7 +18,7 @@ class Simple2DEnv:
     def __init__(
             self, 
             max_steps: int = 100, 
-            dt: float = 0.1,
+            dt: float = 0.25,
             room_width: float = 20.0,
             room_height: float = 20.0,
             robot_radius: float = 0.2,
@@ -679,7 +679,7 @@ class Simple2DEnv:
         reward = -0.01
 
         current_distance = np.linalg.norm(np.array([self.x, self.y]) - np.array([self.goal_x, self.goal_y]))
-        reward -= 0.06*current_distance
+        reward -= 0.02*current_distance
 
         done = self.step_count >= self.max_steps
         info = {}
