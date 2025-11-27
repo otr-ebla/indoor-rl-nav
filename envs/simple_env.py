@@ -17,7 +17,7 @@ class Simple2DEnv:
 
     def __init__(
             self, 
-            max_steps: int = 100, 
+            max_steps: int = 400, 
             dt: float = 0.25,
             room_width: float = 20.0,
             room_height: float = 20.0,

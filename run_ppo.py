@@ -20,6 +20,7 @@ def main():
 
     while True:
         action, _ = model.predict(obs, deterministic=True)
+        #action = [0.5, 0.0]  # Constant action for testing
         print(f"Action taken: v={action[0]:.2f}, w={action[1]:.2f}")
         obs, reward, terminated, truncated, info = env.step(action)
 

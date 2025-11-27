@@ -10,14 +10,14 @@ from dreamerv3_lidar import Dreamer, train_world_model, train_actor_critic
 # --- 1. CONFIGURAZIONE AMBIENTE ---
 env_cfg = StaticConfig(
     dt=0.1,
-    room_width=10.0,
-    room_height=10.0,
+    room_width=15.0,
+    room_height=15.0,
     max_lin_vel=1.0,
     max_ang_vel=2.0,
-    robot_radius=0.3,
+    robot_radius=0.2,
     num_rays=108,          # DEVE ESSERE 108
-    max_lidar_distance=10.0,
-    num_people=3,
+    max_lidar_distance=15.0,
+    num_people=15,
     people_radius=0.3,
     min_circ_obstacles=2,
     max_circ_obstacles=5,
@@ -35,10 +35,14 @@ env_cfg = StaticConfig(
     goal_reward=10.0
 )
 
+<<<<<<< HEAD
 BATCH_SIZE = 512
+=======
+BATCH_SIZE = 32
+>>>>>>> e016cb0b4b32a3302ec4a837c69b73ff3fb42b54
 SEQ_LEN = 50
 
-# Vettorizziamo l'ambiente (4 robot insieme)
+# Vettorizziamo l'ambiente (4 ot insieme)
 reset_vmap = jax.vmap(reset, in_axes=(0, None))
 step_vmap  = jax.vmap(auto_reset_step, in_axes=(0, 0, 0, None, 0, 0, 0))
 
