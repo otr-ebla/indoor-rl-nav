@@ -1,5 +1,7 @@
 # Indoor RL Nav: 2D LiDAR Navigation with JAX
 
+![Indoor Environment](./indoor_gif.gif)
+
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
 ![JAX](https://img.shields.io/badge/JAX-Accelerated-blueviolet)
 ![Status](https://img.shields.io/badge/Status-Active-success)
