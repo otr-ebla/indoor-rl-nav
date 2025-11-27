@@ -39,9 +39,29 @@ Built on the standard **Gymnasium** interface, this environment allows for rapid
 │       ├── gym_nav_env.py    # Core simulation logic
 │       └── bouncing.py       # Dynamics for moving obstacles
 └── requirements.txt     # Project dependencies
-
+```
 
 ## Getting Started
+Create new python environment:
+```
+python3 -m venv 2drlenv
+```
+
+Install dependencies:
 ```
 pip install -r requirements.txt
 ```
+
+Train a new Agent(PPO/SAC):
+```
+python -m scripts.train_ppo
+```
+
+Visualize a Pre-Trained Agent:
+```
+python -m scripts.run_ppo
+
+```
+
+
+
