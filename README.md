@@ -1,5 +1,7 @@
 # Indoor RL Nav: 2D Simulation Environment for Mobile Robot LiDAR Navigation
 
+<img src="assets/indoor_gif.gif" alt="Environment Demo" width="90%"/>
+
 ## Overview
 
 **Indoor RL Nav** is a lightweight, high-performance 2D simulation environment designed specifically for training Deep Reinforcement Learning (DRL) agents to navigate mobile robots.
