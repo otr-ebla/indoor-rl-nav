@@ -1,24 +1,23 @@
 import gymnasium as gym
 from stable_baselines3 import PPO, SAC
 from sb3_contrib import TQC
-from envs.gym_nav_env import GymNavEnv
+from src.envs.gym_nav_env import GymNavEnv  # Updated import path
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 import tensorboard
 from torch.utils.tensorboard import SummaryWriter
 from stable_baselines3.common.callbacks import BaseCallback
 
-
-
 NUM_RAYS = 108
 NUM_PEOPLE = 40
 N_ENVS = 100
 
 class TerminationStatsCallback(BaseCallback):
-    def __init__(self, verbose=0):
+    def __init__(self, verbose=0, training_name="default"):
         super().__init__(verbose)
         
-        self.writer = SummaryWriter()
+        # Updated writer path to keep root clean
+        self.writer = SummaryWriter(log_dir="./logs/" + training_name)
 
         self.success = 0
         self.timeout = 0
@@ -84,7 +83,7 @@ def main():
     #     env,
     #     device="cpu",
     #     verbose=1,
-    #     tensorboard_log="./tensorboard_logs/ppo_nav",  # <-- add this
+    #     tensorboard_log="./logs/ppo_nav",  # Updated path
     #     learning_rate=3e-4,
     #     n_steps=2048,
     #     batch_size=64,
@@ -95,12 +94,16 @@ def main():
     #     ent_coef=0.0,
     # )
 
+    total_timesteps = 30000000
+
+    training_name = "30MSAC"
+
     model = SAC(
         "MlpPolicy",
         env,
         device="cpu",
         verbose=1,
-        tensorboard_log="./tensorboard_logs/sac_nav",  # <-- add this
+        tensorboard_log="./logs/" + training_name,  # Updated path
         learning_rate=3e-4,
         batch_size=256,
         gamma=0.99,
@@ -109,21 +112,18 @@ def main():
         gradient_steps=1,
     )
 
-
-
-    total_timesteps = 30000000
     print(f"Training PPO with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
 
-    callback = TerminationStatsCallback()
-
+    callback = TerminationStatsCallback(training_name=training_name)
 
     model.learn(
         total_timesteps=total_timesteps,
-        tb_log_name="30MSAC",
+        tb_log_name="./logs/sac_nav" + training_name,
         callback=callback,
-                )
+    )
 
-    model.save("30MSAC")
+    # Updated save path to checkpoints folder
+    model.save("./checkpoints/" + training_name)
 
     print("Training completed and model saved.")
 
