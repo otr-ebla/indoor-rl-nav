@@ -6,13 +6,13 @@ from sb3_contrib import TQC
 # Updated import to find env in src
 from src.envs.gym_nav_env import GymNavEnv
 # Updated import to find NUM_RAYS in the sibling script
-from scripts.train_ppo import NUM_RAYS   
+from .train_ppo import NUM_RAYS   
 
 def main():
     env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=20)
 
     # Updated path to point to the new checkpoints folder
-    model = PPO.load("./checkpoints/ppo_gym_nav_env2", env=env)
+    model = TQC.load("./checkpoints/30MSAC", env=env)
 
     obs, info = env.reset()
     done = False

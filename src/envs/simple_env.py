@@ -650,25 +650,21 @@ class Simple2DEnv:
         """
         v, w = action # unpack tuple
 
+        dist_before = math.sqrt((self.x - self.goal_x)**2 + (self.y - self.goal_y)**2)
+
         # Differential drive update
         self.x += v * self.dt * math.cos(self.theta)
         self.y += v * self.dt * math.sin(self.theta)
         self.theta += w * self.dt
 
         self.trajectory.append((self.x, self.y))
-
-
         self._step_people()
         self.step_count += 1
 
-        # LiDAR
-        ray_anles = [
-            self.theta,
-            self.theta + math.pi / 4,
-            self.theta - math.pi / 4,
-        ]
-        lidar = self._compute_lidar()
+        dist_after = math.sqrt((self.x - self.goal_x)**2 + (self.y - self.goal_y)**2)
 
+        # Compute observations and Collisions
+        lidar = self._compute_lidar()
         obs = (self.x, self.y, self.theta, lidar)
 
         collision_wall = self._is_collision_with_walls()    
@@ -676,16 +672,30 @@ class Simple2DEnv:
         collision_obstacles = self._is_collision_with_obstacles()
 
 
-        reward = -0.01
+        # --- REWARD ENGINNERING ---
 
-        current_distance = np.linalg.norm(np.array([self.x, self.y]) - np.array([self.goal_x, self.goal_y]))
-        reward -= 0.02*current_distance
+        reward = 0.0
 
-        done = self.step_count >= self.max_steps
+        # A. Progress reward: Positive if getting closer, negative if moving away
+        progress = (dist_before - dist_after) # positive if getting closer
+        reward += 5*progress
+
+        # B. Time Penalty: small constant negative to encourage speed
+        reward -= 0.01
+
+        # C. Smoothness penalty: small negative for high angular velocities
+        reward -= 0.05*abs(w)
+
+        # D. Safety/LiDAR penalty
+        min_lidar = min(lidar)
+        if min_lidar < 0.5:
+            reward -= 0.5*(0.5-min_lidar)
+
+
+        done = False
         info = {}
-        goal_reached = self._is_goal_reached()
 
-        if goal_reached:
+        if self._is_goal_reached():
             done = True
             reward += 200.0
             info["termination_reason"] = "goal_reached"
@@ -694,15 +704,18 @@ class Simple2DEnv:
             done = True
             reward -= 50.0
             info["termination_reason"] = "people_collision"
-        elif collision_wall:
+
+        if collision_wall:
             done = True
             reward -= 50.0
             info["termination_reason"] = "wall_collision"
-        elif collision_obstacles:
+
+        if collision_obstacles:
             done = True
             reward -= 50.0
             info["termination_reason"] = "obstacle_collision"
-        elif self.step_count >= self.max_steps:
+
+        if self.step_count >= self.max_steps:
             done = True
             reward = -1.0
             info["termination_reason"] = "max_steps_reached"

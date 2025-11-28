@@ -6,6 +6,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 import tensorboard
 from torch.utils.tensorboard import SummaryWriter
+import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
 NUM_RAYS = 108
@@ -72,13 +73,35 @@ def make_env(rank: int):
 def main():
     use_subproc = True
 
+    training_name = "30MTQC"
+    total_timesteps = 30000000
+
     if use_subproc:
         env = SubprocVecEnv([make_env(i) for i in range(N_ENVS)])
     else:
         env = DummyVecEnv([make_env(i) for i in range(N_ENVS)])
 
+    model = TQC(
+        "MlpPolicy",
+        env,
+        #device=("cuda" if torch.cuda.is_available() else "cpu"),
+        device="cpu",   
+        verbose=1,
+        tensorboard_log="./logs/" + training_name,  # Updated path
+        buffer_size=int(1e6),   
+        learning_rate=3e-4,
+        learning_starts=20_000,
+        batch_size=512,
+        gamma=0.99,
+        tau=0.005,
+        train_freq=1,
+        gradient_steps=3,
+        target_entropy=-2,
+        target_update_interval=1,
+    )
 
-    #model = PPO(
+
+    # model = PPO(
     #     "MlpPolicy",
     #     env,
     #     device="cpu",
@@ -94,25 +117,21 @@ def main():
     #     ent_coef=0.0,
     # )
 
-    total_timesteps = 30000000
+    # model = SAC(
+    #     "MlpPolicy",
+    #     env,
+    #     device="cpu",
+    #     verbose=1,
+    #     tensorboard_log="./logs/" + training_name,  # Updated path
+    #     learning_rate=3e-4,
+    #     batch_size=256,
+    #     gamma=0.99,
+    #     tau=0.005,
+    #     train_freq=1,
+    #     gradient_steps=1,
+    # )
 
-    training_name = "30MSAC"
-
-    model = SAC(
-        "MlpPolicy",
-        env,
-        device="cpu",
-        verbose=1,
-        tensorboard_log="./logs/" + training_name,  # Updated path
-        learning_rate=3e-4,
-        batch_size=256,
-        gamma=0.99,
-        tau=0.005,
-        train_freq=1,
-        gradient_steps=1,
-    )
-
-    print(f"Training PPO with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
+    print(f"Training TQC with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
 
     callback = TerminationStatsCallback(training_name=training_name)
 
