@@ -12,7 +12,7 @@ def main():
     env = GymNavEnv(render_mode="human", num_rays=NUM_RAYS, num_people=20)
 
     # Updated path to point to the new checkpoints folder
-    model = TQC.load("./checkpoints/30MSAC", env=env)
+    model = TQC.load("./checkpoints/30MTQC", env=env)
 
     obs, info = env.reset()
     done = False

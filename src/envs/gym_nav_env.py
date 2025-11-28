@@ -6,6 +6,7 @@ from .simple_env import Simple2DEnv
 
 MAX_LIN_VEL = 0.25  # m/s
 MAX_ANG_VEL = 2.0  # rad/s
+MAX_STEPS = 400
 
 
 class GymNavEnv(gym.Env):
@@ -24,6 +25,7 @@ class GymNavEnv(gym.Env):
 
     def __init__(
         self,
+        max_steps: int = MAX_STEPS,
         render_mode: str | None = None,
         num_rays: int = 32,
         num_people: int = 20,
@@ -46,6 +48,7 @@ class GymNavEnv(gym.Env):
         obs_dim = 2 + self.num_rays*self.stack_dim
 
         self.lidar_stack = None
+        self.max_steps = max_steps  
 
         self.observation_space = spaces.Box(
             low=-1.0,
@@ -135,6 +138,12 @@ class GymNavEnv(gym.Env):
             self.env.render()
 
         return obs, reward, terminated, truncated, info 
+    
+
+
+
+
+
     
     def render(self):
         if self.render_mode == "human":

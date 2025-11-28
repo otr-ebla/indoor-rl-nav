@@ -2,6 +2,7 @@ import gymnasium as gym
 from stable_baselines3 import PPO, SAC
 from sb3_contrib import TQC
 from src.envs.gym_nav_env import GymNavEnv  # Updated import path
+from src.envs.norm_gym_env import NormGymEnv  # Updated import path
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 import tensorboard
@@ -11,7 +12,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 NUM_RAYS = 108
 NUM_PEOPLE = 40
-N_ENVS = 100
+N_ENVS = 150
 
 class TerminationStatsCallback(BaseCallback):
     def __init__(self, verbose=0, training_name="default"):
@@ -61,11 +62,17 @@ class TerminationStatsCallback(BaseCallback):
 
 def make_env(rank: int):
     def _init():
-        env = GymNavEnv(
+        # env = GymNavEnv(
+        #     render_mode=None,
+        #     num_rays=NUM_RAYS,
+        #     num_people=NUM_PEOPLE,
+        # )
+        env = NormGymEnv(
             render_mode=None,
             num_rays=NUM_RAYS,
             num_people=NUM_PEOPLE,
         )
+
         env = Monitor(env)
         return env
     return _init
@@ -73,7 +80,7 @@ def make_env(rank: int):
 def main():
     use_subproc = True
 
-    training_name = "30MTQC"
+    training_name = "30MPPO"
     total_timesteps = 30000000
 
     if use_subproc:
@@ -81,41 +88,41 @@ def main():
     else:
         env = DummyVecEnv([make_env(i) for i in range(N_ENVS)])
 
-    model = TQC(
-        "MlpPolicy",
-        env,
-        #device=("cuda" if torch.cuda.is_available() else "cpu"),
-        device="cpu",   
-        verbose=1,
-        tensorboard_log="./logs/" + training_name,  # Updated path
-        buffer_size=int(1e6),   
-        learning_rate=3e-4,
-        learning_starts=20_000,
-        batch_size=512,
-        gamma=0.99,
-        tau=0.005,
-        train_freq=1,
-        gradient_steps=3,
-        target_entropy=-2,
-        target_update_interval=1,
-    )
-
-
-    # model = PPO(
+    # model = TQC(
     #     "MlpPolicy",
     #     env,
-    #     device="cpu",
+    #     #device=("cuda" if torch.cuda.is_available() else "cpu"),
+    #     device="cpu",   
     #     verbose=1,
-    #     tensorboard_log="./logs/ppo_nav",  # Updated path
+    #     tensorboard_log="./logs/" + training_name,  # Updated path
+    #     buffer_size=int(1e6),   
     #     learning_rate=3e-4,
-    #     n_steps=2048,
-    #     batch_size=64,
-    #     n_epochs=10,
+    #     learning_starts=20_000,
+    #     batch_size=512,
     #     gamma=0.99,
-    #     gae_lambda=0.95,
-    #     clip_range=0.2,
-    #     ent_coef=0.0,
+    #     tau=0.005,
+    #     train_freq=1,
+    #     gradient_steps=3,
+    #     target_entropy=-2,
+    #     target_update_interval=1,
     # )
+
+
+    model = PPO(
+        "MlpPolicy",
+        env,
+        device="cpu",
+        verbose=1,
+        tensorboard_log="./logs/ppo_nav",  # Updated path
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+    )
 
     # model = SAC(
     #     "MlpPolicy",
@@ -131,13 +138,13 @@ def main():
     #     gradient_steps=1,
     # )
 
-    print(f"Training TQC with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
+    print(f"Training PPO with {N_ENVS} parallel envs, total_timesteps={total_timesteps}.")
 
     callback = TerminationStatsCallback(training_name=training_name)
 
     model.learn(
         total_timesteps=total_timesteps,
-        tb_log_name="./logs/sac_nav" + training_name,
+        tb_log_name="./logs/ppo_nav" + training_name,
         callback=callback,
     )
 

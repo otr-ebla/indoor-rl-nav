@@ -107,13 +107,10 @@ class Simple2DEnv:
         t_far = min(tmax_x, tmax_y)
 
         # No intersection or behind the origin
-        if t_near > t_far or t_far < 0:
+        if t_near < 0:
             return None
         
-        if t_near < 0:
-            if t_far >= 0:
-                return t_far
-        return t_near
+        return t_near 
 
     def _ray_circle_intersection(self, angle, cx, cy, radius):
         """
@@ -636,9 +633,6 @@ class Simple2DEnv:
         
         return min(distances) # for every ray-angle return min computed value, that is the intersection
     
-    def _compute_lidar(self):
-        """
-        Compute lidar distance for all rays"""
 
     
     def step(self, action):
